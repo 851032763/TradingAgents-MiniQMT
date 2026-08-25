@@ -2549,12 +2549,25 @@ def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    import akshare as ak  # type: ignore
-
     symbol_key = symbol.upper()
     vendor_symbol = CN_INDEX_SYMBOL_MAP.get(symbol_key)
     if not vendor_symbol:
         return []
+
+    # Index data bypasses the ordinary provider chain so the generic A-share
+    # providers cannot mistake an index code for an individual stock. Try the
+    # local MiniQMT source first, then preserve the existing AkShare fallback.
+    try:
+        from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+
+        miniqmt_csv = CnMiniQMTProvider().get_stock_data(symbol_key, start_date, end_date)
+        candles = _parse_stock_csv(miniqmt_csv)
+        if candles:
+            return candles
+    except Exception as exc:
+        _log(f"[kline] MiniQMT index fetch unavailable for {symbol}: {type(exc).__name__}: {exc}")
+
+    import akshare as ak  # type: ignore
 
     yyyymmdd_start = start_date.replace("-", "")
     yyyymmdd_end = end_date.replace("-", "")

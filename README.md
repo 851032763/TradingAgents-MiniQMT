@@ -2,16 +2,10 @@
 
 本项目是基于多智能体协作的 A 股深度分析系统，模拟顶级投研机构的决策闭环，通过 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
 
-[在线体验](https://app.510168.xyz) | [Releases](https://github.com/KylinMountain/TradingAgents-AShare/releases) | [OpenClaw 技能](https://clawhub.ai/kylinmountain/tradingagents-analysis)
-
-> 🎁 **用 Codex / Claude Code 有困难？** 推荐中转服务 **[windapi](https://windapi.ai/sign-up?aff=eMfU)** —— 一个 Key 通调 **GPT / Claude / Grok** 等主流模型，畅用 **Codex / Claude Code**，也能直接用于本项目分析；国内直连免翻墙、支持支付宝 / 微信充值，倍率 `0.06`。👉 **[点此注册即用](https://windapi.ai/sign-up?aff=eMfU)**
-
 <div align="center">
   <img src="assets/web/analysis.png" width="100%" alt="智能分析"/>
   <p><em>14 名智能体实时协作，左侧对话驱动，右侧可视化全流程</em></p>
 </div>
-
-> TradingAgents-AShare 已正式上线 OpenClaw！您只需通过 `tradingagents-analysis` 技能，即可让您的 AI助手具备专业的 A 股深度投研能力。
 
 ## 功能特性
 
@@ -55,8 +49,6 @@
 ### 多模型厂商支持
 
 OpenAI、Anthropic、Google Gemini、DeepSeek、Moonshot、智谱、硅基流动等，用户可在前端自由切换模型厂商与具体模型；保存配置后会自动执行模型 warmup，也可以在设置页手动发送“你好”查看模型原始返回，便于排查接入问题。
-
-> 💡 **用 Codex / Claude Code 有困难，或没有 API Key？** 推荐中转服务 [windapi](https://windapi.ai/sign-up?aff=eMfU) —— 一个 Key 通调 **GPT / Claude / Grok**，畅用 **Codex / Claude Code**，也能直接用于本站分析；国内直连免翻墙，支持支付宝 / 微信充值，倍率 `0.06`。注册即用。
 
 <div align="center">
   <img src="assets/web/settings.png" width="80%" alt="定时分析"/>
@@ -103,6 +95,7 @@ TradingAgents 模拟真实交易机构的部门协作，将复杂任务拆解为
 |------|----------|------|
 | Docker 部署 | Docker Engine / Docker Desktop | 推荐方式，镜像内已包含后端与构建后的前端 |
 | 源码安装 | Python 3.10+、[uv](https://docs.astral.sh/uv/)、Node.js 18+、npm | 适合本地开发、调试后端或前端 |
+| MiniQMT 数据源 | 本机 MiniQMT 客户端、可用的 `xtquant` | 可选；适合需要使用本地 MiniQMT 行情、实时数据和财务数据的场景 |
 
 如果本机尚未安装 `uv`，可先执行：
 
@@ -195,6 +188,49 @@ npm run dev
 ```
 
 前端开发服务器默认运行在 `http://localhost:5173`，后端仍保持 `http://localhost:8000`。
+
+### 数据源与 MiniQMT
+
+项目支持将本机 MiniQMT 作为优先数据源。配置生效后，以下内容会优先从 MiniQMT 获取：
+
+- 日线 K 线和实时行情；
+- 基于 MiniQMT OHLCV 数据计算的技术指标；
+- MiniQMT 能提供的公司财务数据；
+- 指数 K 线接口（例如 `000001.SH`）。
+
+新闻、资金流、龙虎榜、涨停池等 MiniQMT 未提供的内容，会自动继续使用 AkShare、BaoStock、今日投资、yfinance 等已有数据源。MiniQMT 未安装、客户端未运行、本地没有对应历史数据或接口返回失败时，也会按同样规则自动回退，不会阻塞整个分析流程。
+
+MiniQMT 属于本地客户端数据源，建议使用源码方式部署。先完成 MiniQMT 客户端安装并确认客户端正常运行，再在项目虚拟环境中配置 `xtquant` 路径。Windows PowerShell 示例：
+
+```powershell
+# 项目根目录
+uv sync
+
+# 填写 xtquant 所在目录的上级目录，路径以本机 MiniQMT 安装位置为准
+$env:MINIQMT_XTQUANT_PATH = "C:\\MiniQMT\\bin.x64"
+
+# 可选：本地没有日线时，允许 MiniQMT 尝试下载历史数据
+$env:MINIQMT_AUTO_DOWNLOAD = "1"
+
+uv run python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Linux/macOS 或通过 `.env` 配置时，可使用：
+
+```dotenv
+# xtquant 包所在目录的上级目录
+MINIQMT_XTQUANT_PATH=/path/to/miniqmt/bin.x64
+# 默认 0，仅读取已下载数据；设为 1 才会尝试自动下载日线
+MINIQMT_AUTO_DOWNLOAD=0
+```
+
+默认数据源优先级为：
+
+```text
+cn_miniqmt -> cn_akshare -> cn_baostock -> cn_investoday -> yfinance -> alpha_vantage
+```
+
+数据源配置可在 [`.env.example`](.env.example) 中查看。Docker 容器通常无法直接连接宿主机上的 MiniQMT 客户端；如需使用 MiniQMT，请在运行 MiniQMT 的主机上进行源码部署，并确保 API 进程与 MiniQMT 使用可访问的同一用户环境。
 
 ## API 集成
 

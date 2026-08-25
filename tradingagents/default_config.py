@@ -36,11 +36,12 @@ DEFAULT_CONFIG = {
         os.getenv("INVESTODAY_BASE_URL", "https://data-api.investoday.net/data").strip()
     ),
     "data_vendors": {
-        "core_stock_apis": "cn_akshare,cn_baostock,cn_investoday,yfinance",
-        "technical_indicators": "cn_akshare,cn_baostock,cn_investoday,yfinance",
-        "fundamental_data": "cn_akshare,cn_baostock,cn_investoday,yfinance",
-        "news_data": "cn_akshare,cn_baostock,cn_investoday,yfinance",
-        "realtime_data": "cn_akshare,cn_investoday",
+        "core_stock_apis": "cn_miniqmt,cn_akshare,cn_baostock,cn_investoday,yfinance",
+        "technical_indicators": "cn_miniqmt,cn_akshare,cn_baostock,cn_investoday,yfinance",
+        "fundamental_data": "cn_miniqmt,cn_akshare,cn_baostock,cn_investoday,yfinance",
+        "news_data": "cn_miniqmt,cn_akshare,cn_baostock,cn_investoday,yfinance",
+        "realtime_data": "cn_miniqmt,cn_akshare,cn_investoday",
+        "cn_market_data": "cn_miniqmt,cn_akshare,cn_baostock,cn_investoday,yfinance",
     },
     "tool_vendors": {},
 }

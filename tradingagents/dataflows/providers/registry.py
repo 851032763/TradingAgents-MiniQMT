@@ -7,6 +7,7 @@ from .china_equity_provider import CnStubProvider
 from .cn_akshare_provider import CnAkshareProvider
 from .cn_baostock_provider import CnBaoStockProvider
 from .cn_investoday_provider import CnInvestodayProvider
+from .cn_miniqmt_provider import CnMiniQMTProvider
 
 
 class DataProviderRegistry:
@@ -27,6 +28,7 @@ class DataProviderRegistry:
 
 def build_default_registry() -> DataProviderRegistry:
     registry = DataProviderRegistry()
+    registry.register(CnMiniQMTProvider())
     registry.register(CnAkshareProvider())
     registry.register(CnBaoStockProvider())
     registry.register(CnInvestodayProvider())
