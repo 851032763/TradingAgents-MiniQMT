@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from threading import Lock
+from zoneinfo import ZoneInfo
 from fastapi import Body
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
@@ -27,6 +28,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+CN_TZ = ZoneInfo("Asia/Shanghai")
 
 from dotenv import load_dotenv
 
@@ -677,6 +679,11 @@ class KlineResponse(BaseModel):
     start_date: str
     end_date: str
     candles: List[Dict[str, Any]]
+    period: Literal["1d", "5m", "1m"] = "1d"
+    source: Optional[str] = None
+    degraded: bool = False
+    message: Optional[str] = None
+    realtime_supported: bool = False
 
 
 # Report API Models
@@ -2630,6 +2637,90 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
     return []
 
 
+def _merge_realtime_daily_candle(symbol: str, candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Overlay the latest MiniQMT quote onto today's daily candle."""
+    try:
+        raw = route_to_vendor("get_realtime_quotes", [symbol])
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        quote = payload.get(symbol) or payload.get(symbol.upper()) if isinstance(payload, dict) else None
+        if not quote or quote.get("price") is None:
+            return candles
+        quote_time = _parse_quote_time(quote.get("quote_time"))
+        today = cn_today_str()
+        if quote_time.strftime("%Y-%m-%d") != today:
+            return candles
+        price = float(quote["price"])
+        current = {
+            "date": today,
+            "open": float(quote.get("open") or price),
+            "high": float(quote.get("high") or price),
+            "low": float(quote.get("low") or price),
+            "close": price,
+            "volume": quote.get("volume"),
+            "amount": quote.get("amount"),
+            "change": quote.get("change"),
+            "change_percent": quote.get("change_pct"),
+            "source": "miniqmt",
+        }
+        for index, candle in enumerate(candles):
+            if candle.get("date") == today:
+                candles[index] = {**candle, **current}
+                return candles
+        return [*candles, current]
+    except Exception as exc:
+        _log(f"[kline] realtime daily overlay unavailable for {symbol}: {type(exc).__name__}: {exc}")
+        return candles
+
+
+def _dataframe_to_kline_candles(df: pd.DataFrame, period: str) -> List[Dict[str, Any]]:
+    """Normalize MiniQMT bars into the stable frontend candle contract."""
+    normalized = _normalize_kline_df(df)
+    if normalized.empty:
+        return []
+    candles: List[Dict[str, Any]] = []
+    previous_close: float | None = None
+    # MiniQMT's 5m history is stamped at interval end; its 1m history is
+    # already stamped at interval open.
+    bar_delta = timedelta(minutes=5) if period == "5m" else timedelta(0)
+    for _, row in normalized.iterrows():
+        close = float(row["Close"])
+        change = close - previous_close if previous_close is not None else None
+        # The chart contract uses the interval opening time (09:30, 09:35...).
+        bar_time = row["Date"] - bar_delta if period != "1d" else row["Date"]
+        candles.append({
+            "date": bar_time.strftime("%Y-%m-%dT%H:%M:%S") if period != "1d" else bar_time.strftime("%Y-%m-%d"),
+            "open": float(row["Open"]), "high": float(row["High"]),
+            "low": float(row["Low"]), "close": close,
+            "volume": float(row["Volume"]) if "Volume" in normalized.columns and pd.notna(row.get("Volume")) else None,
+            "amount": float(row["Amount"]) if "Amount" in normalized.columns and pd.notna(row.get("Amount")) else None,
+            "change": change,
+            "change_percent": (change / previous_close * 100) if change is not None and previous_close else None,
+            "turnover_rate": float(row["TurnoverRate"]) if "TurnoverRate" in normalized.columns and pd.notna(row.get("TurnoverRate")) else None,
+        })
+        previous_close = close
+    return candles
+
+
+def _fetch_intraday_kline(symbol: str, period: str, start_time: str, end_time: str) -> Tuple[List[Dict[str, Any]], str, bool, str | None, bool]:
+    """Fetch minute bars from MiniQMT and report degradation without fabricating data."""
+    _log(f"[MiniQMT] kline request started: symbol={symbol} period={period} start={start_time} end={end_time}")
+    try:
+        from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+
+        frame = CnMiniQMTProvider().get_intraday_data(symbol, period, start_time, end_time)
+        candles = _dataframe_to_kline_candles(frame, period)
+        if candles:
+            _log(f"[MiniQMT] kline request completed: symbol={symbol} period={period} candles={len(candles)} source=miniqmt")
+            return candles, "miniqmt", False, None, True
+        _log(f"[MiniQMT] kline request returned no complete candles: symbol={symbol} period={period}")
+        return [], "miniqmt", False, "分钟 K 线数据不完整", False
+    except Exception as exc:
+        _log(f"[kline] MiniQMT {period} fetch unavailable for {symbol}: {type(exc).__name__}: {exc}")
+        if "incomplete" in str(exc).lower():
+            return [], "miniqmt", True, "分钟 K 线数据不完整", False
+        return [], "daily", True, "miniQMT 数据源连接失败，当前数据源只支持日线行情，暂不支持5分钟、1分钟及实时行情。", False
+
+
 async def _stream_job_events(job_id: str):
     store = get_job_store()
     yield _sse_pack("job.ready", {"job_id": job_id})
@@ -2704,12 +2795,31 @@ def get_kline(
     symbol: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    period: Literal["1d", "5m", "1m"] = "1d",
 ) -> KlineResponse:
     end = end_date or cn_today_str()
     if start_date:
         start = start_date
     else:
-        start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=120)).strftime("%Y-%m-%d")
+        lookback = 120 if period == "1d" else (30 if period == "5m" else 7)
+        start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=lookback)).strftime("%Y-%m-%d")
+
+    if period != "1d":
+        normalized_symbol = symbol.upper() if _is_cn_index_symbol(symbol) else _normalize_symbol(symbol)
+        candles, source, degraded, message, realtime_supported = _fetch_intraday_kline(
+            normalized_symbol, period, start, end
+        )
+        return KlineResponse(
+            symbol=normalized_symbol,
+            start_date=start,
+            end_date=end,
+            candles=candles,
+            period=period,
+            source=source,
+            degraded=degraded,
+            message=message,
+            realtime_supported=realtime_supported,
+        )
 
     if _is_cn_index_symbol(symbol):
         candles = _fetch_index_kline(symbol, start, end)
@@ -2729,6 +2839,7 @@ def get_kline(
         set_config(config)
         raw = route_to_vendor("get_stock_data", symbol, start, end)
         candles = _parse_stock_csv(raw)
+    candles = _merge_realtime_daily_candle(symbol, candles)
     if not candles:
         raise HTTPException(status_code=404, detail="no kline data")
     return KlineResponse(
@@ -2736,7 +2847,80 @@ def get_kline(
         start_date=start,
         end_date=end,
         candles=candles,
+        period="1d",
+        source="miniqmt" if _is_cn_index_symbol(symbol) else "provider",
+        realtime_supported=False,
     )
+
+
+def _parse_quote_time(value: Any) -> datetime:
+    try:
+        number = float(value)
+        if number > 10**11:
+            return datetime.fromtimestamp(number / 1000, tz=timezone.utc).astimezone(CN_TZ).replace(tzinfo=None)
+        if number > 10**9:
+            return datetime.fromtimestamp(number, tz=timezone.utc).astimezone(CN_TZ).replace(tzinfo=None)
+    except (TypeError, ValueError, OSError):
+        pass
+    return datetime.now()
+
+
+def _quote_to_candle(symbol: str, period: str, quote: Dict[str, Any]) -> Dict[str, Any] | None:
+    price = quote.get("price")
+    if price is None:
+        return None
+    dt = _parse_quote_time(quote.get("quote_time"))
+    minute = dt.replace(second=0, microsecond=0)
+    if period == "5m":
+        minute -= timedelta(minutes=minute.minute % 5)
+        # The 15:00 tick is the closing update for the 14:55-15:00 bar,
+        # matching MiniQMT's historical 5m timestamp convention.
+        if minute.time() >= datetime.strptime("15:00", "%H:%M").time():
+            minute -= timedelta(minutes=5)
+    # Full-tick open/high/low are session-wide values, not this minute bar's
+    # OHLC. Start a new realtime bar at the last price; the frontend preserves
+    # the historical bar range and accumulates subsequent tick extremes.
+    open_price = high_price = low_price = price
+    return {
+        "date": minute.strftime("%Y-%m-%dT%H:%M:%S"),
+        "open": float(open_price), "high": float(high_price), "low": float(low_price), "close": float(price),
+        "volume": quote.get("volume"), "amount": quote.get("amount"), "source": "miniqmt",
+    }
+
+
+@app.get("/v1/market/kline/stream")
+async def stream_kline(
+    request: Request,
+    symbol: str,
+    period: Literal["5m", "1m"],
+):
+    """SSE stream for the current MiniQMT intraday candle."""
+    async def events():
+        try:
+            from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+            provider = CnMiniQMTProvider()
+            _log(f"[MiniQMT] realtime stream opened: symbol={symbol} period={period}")
+            yield _sse_pack("status", {"status": "connecting", "message": "正在连接实时行情…"})
+            while not await request.is_disconnected():
+                try:
+                    raw = await asyncio.to_thread(provider.get_realtime_quotes, [symbol])
+                    payload = json.loads(raw) if isinstance(raw, str) else raw
+                    quote = payload.get(symbol) or payload.get(symbol.upper()) or next(iter(payload.values()), None)
+                    candle = _quote_to_candle(symbol, period, quote or {})
+                    if candle:
+                        yield _sse_pack("candle.update", candle)
+                        yield _sse_pack("status", {"status": "live", "last_updated": datetime.now().isoformat(timespec="seconds")})
+                except Exception as exc:
+                    _log(f"[MiniQMT] realtime stream disconnected: symbol={symbol} period={period} error={type(exc).__name__}: {exc}")
+                    yield _sse_pack("status", {"status": "disconnected", "message": "实时行情连接已断开，正在尝试重连…", "error": str(exc)})
+                    await asyncio.sleep(5)
+                    continue
+                await asyncio.sleep(2)
+        except Exception as exc:
+            _log(f"[MiniQMT] realtime stream unavailable: symbol={symbol} period={period} error={type(exc).__name__}: {exc}")
+            yield _sse_pack("status", {"status": "degraded", "message": "miniQMT 数据源不可用，当前数据源只支持日线行情"})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _normalize_ths_code(code: str) -> str:

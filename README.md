@@ -200,11 +200,22 @@ npm run dev
 
 新闻、资金流、龙虎榜、涨停池等 MiniQMT 未提供的内容，会自动继续使用 AkShare、BaoStock、今日投资、yfinance 等已有数据源。MiniQMT 未安装、客户端未运行、本地没有对应历史数据或接口返回失败时，也会按同样规则自动回退，不会阻塞整个分析流程。
 
+#### 行情更新与时间
+
+- 日线 K 线请求会将结束日期按包含语义读取；如果 MiniQMT 返回当天实时行情，API 会把最新价格、成交量和成交额合并到当天日线，因此盘中可看到当天实时值。
+- 切换到 1 分钟或 5 分钟周期时，前端先加载历史数据：1 分钟默认最近 7 天，5 分钟默认最近 30 天。若请求包含当天且当前已收盘，系统会检查最后一根数据是否覆盖到 15:00；仅有上午数据时，会自动调用 MiniQMT 下载当天缺失区间并重新读取（需要 `MINIQMT_AUTO_DOWNLOAD=1`）。
+- 分钟历史加载成功后，前端通过 `/v1/market/kline/stream` 接收实时更新，后端约每 2 秒读取一次 MiniQMT 最新行情；连接异常时约每 5 秒重试。
+- 5 分钟 K 线使用区间开始时间标记，最后一根 `14:55` 柱覆盖 `14:55-15:00` 的收盘区间；不会额外生成 `15:00` 的新柱。
+- 1 分钟和 5 分钟在图表坐标轴、悬浮信息和实时状态中的展示格式统一为 `YYYY/MM/DD HH:mm`，例如 `2026/08/26 14:30`。
+
 MiniQMT 属于本地客户端数据源，建议使用源码方式部署。先完成 MiniQMT 客户端安装并确认客户端正常运行，再在项目虚拟环境中配置 `xtquant` 路径。Windows PowerShell 示例：
+
+> **Python 版本要求**：MiniQMT 的 `xtquant` 包包含 Python 原生扩展，必须使用与扩展匹配的 Python 版本。当前常见 MiniQMT 安装提供 `cp310`/`cp311` 扩展，推荐使用 Python 3.11；不要使用 Python 3.12 启动 API，否则可能出现 `No module named 'xtquant.IPythonApiClient'` 或 DLL 加载失败。
 
 ```powershell
 # 项目根目录
-uv sync
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 
 # 填写 xtquant 所在目录的上级目录，路径以本机 MiniQMT 安装位置为准
 $env:MINIQMT_XTQUANT_PATH = "C:\\MiniQMT\\bin.x64"
@@ -212,7 +223,7 @@ $env:MINIQMT_XTQUANT_PATH = "C:\\MiniQMT\\bin.x64"
 # 可选：本地没有日线时，允许 MiniQMT 尝试下载历史数据
 $env:MINIQMT_AUTO_DOWNLOAD = "1"
 
-uv run python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
 Linux/macOS 或通过 `.env` 配置时，可使用：

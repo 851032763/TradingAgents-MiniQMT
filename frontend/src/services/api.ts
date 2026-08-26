@@ -75,11 +75,17 @@ class ApiService {
         return this.request(`/v1/jobs/${jobId}/result`)
     }
 
-    async getKline(symbol: string, startDate?: string, endDate?: string): Promise<KlineResponse> {
+    async getKline(symbol: string, startDate?: string, endDate?: string, period: '1d' | '5m' | '1m' = '1d'): Promise<KlineResponse> {
         const params = new URLSearchParams({ symbol })
         if (startDate) params.append('start_date', startDate)
         if (endDate) params.append('end_date', endDate)
+        params.append('period', period)
         return this.request<KlineResponse>(`/v1/market/kline?${params}`)
+    }
+
+    getKlineStreamUrl(symbol: string, period: '5m' | '1m'): string {
+        const params = new URLSearchParams({ symbol, period })
+        return `${getBaseUrl()}/v1/market/kline/stream?${params}`
     }
 
     async chatCompletion(

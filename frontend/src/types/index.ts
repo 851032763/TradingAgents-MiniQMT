@@ -303,6 +303,11 @@ export interface KlineResponse {
     start_date: string
     end_date: string
     candles: KlineCandle[]
+    period: '1d' | '5m' | '1m'
+    source?: string | null
+    degraded?: boolean
+    message?: string | null
+    realtime_supported?: boolean
 }
 
 // Structured extraction types
