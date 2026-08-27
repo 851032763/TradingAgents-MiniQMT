@@ -1168,6 +1168,12 @@ function parseLooseDate(value?: string | null): Date | null {
     const trimmed = value.trim()
     if (!trimmed) return null
 
+    const numeric = Number(trimmed)
+    if (/^\d+$/.test(trimmed) && Number.isFinite(numeric)) {
+        const parsed = new Date(numeric < 1e11 ? numeric * 1000 : numeric)
+        return Number.isNaN(parsed.getTime()) ? null : parsed
+    }
+
     let match = /^(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed)
     if (match) {
         return new Date(

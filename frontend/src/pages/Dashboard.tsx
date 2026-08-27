@@ -272,14 +272,18 @@ function MetaCard({
 
 function formatDashboardTime(value?: string | null): string {
     if (!value) return '--'
-    const parsed = new Date(value.replace(' ', 'T'))
+    const trimmed = value.trim()
+    const numeric = Number(trimmed)
+    const parsed = /^\d+$/.test(trimmed) && Number.isFinite(numeric)
+        ? new Date(numeric < 1e11 ? numeric * 1000 : numeric)
+        : new Date(trimmed.replace(' ', 'T'))
     if (Number.isNaN(parsed.getTime())) return value
-    return parsed.toLocaleString('zh-CN', {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-    })
+    const year = parsed.getFullYear()
+    const month = String(parsed.getMonth() + 1).padStart(2, '0')
+    const day = String(parsed.getDate()).padStart(2, '0')
+    const hours = String(parsed.getHours()).padStart(2, '0')
+    const minutes = String(parsed.getMinutes()).padStart(2, '0')
+    return `${year}/${month}/${day} ${hours}:${minutes}`
 }
 
 interface StatCardProps {
