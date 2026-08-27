@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { TrendingUp } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, TrendingUp } from 'lucide-react'
 
 import { navItems } from '@/components/sidebarNav'
 
@@ -8,18 +8,25 @@ const buildDate = __APP_BUILD_DATE__
 const buildCommit = __APP_BUILD_COMMIT__
 const buildVersion = __APP_BUILD_VERSION__
 
-export default function Sidebar() {
-    const [isExpanded, setIsExpanded] = useState(false)
+interface SidebarProps {
+    isPinned: boolean
+    onPinnedChange: (isPinned: boolean) => void
+}
+
+export default function Sidebar({ isPinned, onPinnedChange }: SidebarProps) {
+    const [isHovered, setIsHovered] = useState(false)
+    const isExpanded = isPinned || isHovered
+    const togglePinned = () => onPinnedChange(!isPinned)
 
     return (
         <aside
-            className={`fixed left-0 top-0 h-full bg-slate-900/95 backdrop-blur-md border-r border-slate-700 flex flex-col z-50 transition-all duration-300 ${isExpanded ? 'w-48' : 'w-16'
+            className={`fixed left-0 top-0 h-full bg-slate-900/95 backdrop-blur-md border-r border-slate-700 flex flex-col z-50 transition-all duration-300 ${isExpanded ? 'w-56' : 'w-16'
                 }`}
-            onMouseEnter={() => setIsExpanded(true)}
-            onMouseLeave={() => setIsExpanded(false)}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
         >
             {/* Logo */}
-            <div className="h-16 flex items-center justify-center border-b border-slate-700 px-2">
+            <div className={`h-16 flex items-center border-b border-slate-700 px-2 ${isExpanded ? 'justify-between' : 'justify-center'}`}>
                 <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 via-purple-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/30 flex-shrink-0">
                         <TrendingUp className="w-5 h-5 text-white" />
@@ -30,6 +37,21 @@ export default function Sidebar() {
                         </span>
                     )}
                 </div>
+                {isExpanded && (
+                    <button
+                        type="button"
+                        onClick={togglePinned}
+                        aria-label={isPinned ? '取消固定侧边栏' : '固定侧边栏'}
+                        aria-pressed={isPinned}
+                        title={isPinned ? '取消固定侧边栏' : '固定侧边栏'}
+                        className={`grid h-8 w-8 shrink-0 place-items-center rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400/70 ${isPinned
+                            ? 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                            : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                            }`}
+                    >
+                        {isPinned ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+                    </button>
+                )}
             </div>
 
             {/* Navigation */}
@@ -63,7 +85,16 @@ export default function Sidebar() {
                         <p className="mt-0.5 text-[10px] text-slate-500">{buildDate} · {buildCommit}</p>
                     </div>
                 ) : (
-                    <div className="text-[10px] text-slate-500 text-center font-mono">{buildCommit}</div>
+                    <button
+                        type="button"
+                        onClick={togglePinned}
+                        aria-label="固定侧边栏"
+                        aria-pressed={false}
+                        title="固定侧边栏"
+                        className="grid h-8 w-8 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
+                    >
+                        <PanelLeftOpen className="h-4 w-4" />
+                    </button>
                 )}
             </div>
         </aside>
