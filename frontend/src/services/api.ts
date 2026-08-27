@@ -83,7 +83,7 @@ class ApiService {
         return this.request<KlineResponse>(`/v1/market/kline?${params}`)
     }
 
-    getKlineStreamUrl(symbol: string, period: '5m' | '1m'): string {
+    getKlineStreamUrl(symbol: string, period: '1d' | '5m' | '1m'): string {
         const params = new URLSearchParams({ symbol, period })
         return `${getBaseUrl()}/v1/market/kline/stream?${params}`
     }

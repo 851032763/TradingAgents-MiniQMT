@@ -2870,6 +2870,18 @@ def _quote_to_candle(symbol: str, period: str, quote: Dict[str, Any]) -> Dict[st
     if price is None:
         return None
     dt = _parse_quote_time(quote.get("quote_time"))
+    if period == "1d":
+        price = float(price)
+        return {
+            "date": dt.strftime("%Y-%m-%d"),
+            "open": float(quote.get("open") or price),
+            "high": float(quote.get("high") or price),
+            "low": float(quote.get("low") or price),
+            "close": price,
+            "volume": quote.get("volume"), "amount": quote.get("amount"),
+            "change": quote.get("change"), "change_percent": quote.get("change_pct"),
+            "source": "miniqmt",
+        }
     minute = dt.replace(second=0, microsecond=0)
     if period == "5m":
         minute -= timedelta(minutes=minute.minute % 5)
@@ -2892,9 +2904,9 @@ def _quote_to_candle(symbol: str, period: str, quote: Dict[str, Any]) -> Dict[st
 async def stream_kline(
     request: Request,
     symbol: str,
-    period: Literal["5m", "1m"],
+    period: Literal["1d", "5m", "1m"],
 ):
-    """SSE stream for the current MiniQMT intraday candle."""
+    """SSE stream for the current MiniQMT daily or intraday candle."""
     async def events():
         try:
             from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider

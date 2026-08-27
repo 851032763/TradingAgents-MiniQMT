@@ -314,8 +314,71 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
         if df.empty and self._auto_download_enabled():
             self._download_if_enabled(code, start_date, query_end)
             df = fetch()
+        df = self._merge_realtime_daily_bar(symbol, end_date, df)
         logger.info("[MiniQMT] daily history read completed: code=%s rows=%d", code, len(df))
         return df
+
+    def _merge_realtime_daily_bar(
+        self,
+        symbol: str,
+        end_date: str,
+        history: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Overlay MiniQMT's latest full tick onto today's daily OHLCV bar.
+
+        MiniQMT's downloaded daily cache can lag the live quote.  The analysis
+        pipeline uses this daily frame to calculate technical and volume-price
+        indicators, so the live quote has to be merged here rather than only in
+        the chart API.
+        """
+        try:
+            requested_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return history
+
+        current_time = now_cn()
+        today = current_time.date()
+        if requested_end != today or not is_cn_trading_day(today.strftime("%Y-%m-%d")):
+            return history
+        if cn_market_phase(current_time) in ("pre_open", "closed"):
+            return history
+
+        code = self._normalize_symbol(symbol)
+        try:
+            ticks = self._xtdata().get_full_tick([code])
+            tick = ticks.get(code, {}) if isinstance(ticks, dict) else {}
+            price = self._number(tick.get("lastPrice", tick.get("last_price")))
+            if price is None:
+                return history
+
+            open_price = self._number(tick.get("open")) or price
+            high_price = self._number(tick.get("high")) or price
+            low_price = self._number(tick.get("low")) or price
+            row = pd.DataFrame([{
+                "Date": pd.Timestamp(today),
+                "Open": open_price,
+                "High": high_price,
+                "Low": low_price,
+                "Close": price,
+                "Volume": self._number(tick.get("volume")),
+                "Amount": self._number(tick.get("amount")),
+            }])
+            # A malformed tick should never replace a valid historical candle.
+            if row[["Open", "High", "Low", "Close"]].isna().any(axis=None):
+                return history
+
+            merged = pd.concat([history, row], ignore_index=True)
+            merged = merged.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+            logger.info("[MiniQMT] overlaid live daily bar: code=%s date=%s", code, today)
+            return merged.reset_index(drop=True)
+        except Exception as exc:
+            logger.warning(
+                "[MiniQMT] live daily bar unavailable; using cached history: code=%s error=%s: %s",
+                code,
+                type(exc).__name__,
+                exc,
+            )
+            return history
 
     def get_intraday_data(
         self, symbol: str, period: str, start_time: str, end_time: str,
