@@ -19,6 +19,7 @@ import pandas as pd
 from stockstats import wrap
 
 from .base import BaseMarketDataProvider
+from ..table_utils import table_to_markdown
 from ..trade_calendar import cn_market_phase, cn_no_data_reason, is_cn_trading_day, now_cn
 
 
@@ -535,7 +536,8 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
         df = pd.DataFrame(data) if data is not None else pd.DataFrame()
         if df.empty:
             raise NotImplementedError(f"cn_miniqmt has no {title} data for {ticker}")
-        return f"## {title} ({ticker}) - MiniQMT\n\n{df.head(12).iloc[:, :18].to_markdown(index=False)}"
+        table = table_to_markdown(df, max_rows=12, max_cols=18)
+        return f"## {title} ({ticker}) - MiniQMT\n\n{table}"
 
     def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
         return self._financial_table(ticker, "PershareIndex", "公司关键指标", curr_date)

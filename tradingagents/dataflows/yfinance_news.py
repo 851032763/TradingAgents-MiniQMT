@@ -148,6 +148,13 @@ def get_global_news_yfinance(
 
                     # Deduplicate by title
                     if title and title not in seen_titles:
+                        pub_date = _extract_article_data(article).get("pub_date") if "content" in article else None
+                        if pub_date is not None:
+                            curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+                            start_dt = curr_dt - relativedelta(days=look_back_days)
+                            pub_date_naive = pub_date.replace(tzinfo=None)
+                            if not (start_dt <= pub_date_naive <= curr_dt + relativedelta(days=1)):
+                                continue
                         seen_titles.add(title)
                         all_news.append(article)
 
@@ -155,7 +162,7 @@ def get_global_news_yfinance(
                 break
 
         if not all_news:
-            return f"No global news found for {curr_date}"
+            raise RuntimeError(f"yfinance returned no global news for {curr_date}")
 
         # Calculate date range
         curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -187,4 +194,4 @@ def get_global_news_yfinance(
         return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
 
     except Exception as e:
-        return f"Error fetching global news: {str(e)}"
+        raise RuntimeError(f"yfinance global news request failed: {e}") from e

@@ -10,9 +10,14 @@ from tradingagents.agents.utils.agent_states import current_tracker_var, extract
 def create_news_analyst(llm, data_collector=None):
     async def _safe(tool, payload):
         try:
-            return await asyncio.to_thread(tool.invoke, payload)
-        except Exception as exc:
-            return f"调用失败：{exc}"
+            result = await asyncio.to_thread(tool.invoke, payload)
+            if isinstance(result, str) and result.lstrip().lower().startswith(
+                ("error ", "no available vendor", "调用失败", "未获取到", "数据暂不可用")
+            ):
+                return "【数据不可用】该新闻源当前没有可用结果，分析时请忽略该部分。"
+            return result
+        except Exception:
+            return "【数据不可用】该新闻源当前没有可用结果，分析时请忽略该部分。"
 
     async def news_analyst_node(state):
         current_date = state["trade_date"]
@@ -29,7 +34,7 @@ def create_news_analyst(llm, data_collector=None):
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
         if pool is not None:
-            data_window = pool.get("_data_window", "14天" if horizon == "short" else "90天")
+            data_window = pool.get("_news_data_window", pool.get("_data_window", "14天" if horizon == "short" else "90天"))
             stock_news = pool.get("news", "无数据")
             global_news = pool.get("global_news", "无数据")
         else:

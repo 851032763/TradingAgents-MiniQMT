@@ -10,6 +10,7 @@ from stockstats import wrap
 
 from .base import BaseMarketDataProvider
 from ..trade_calendar import cn_market_phase, cn_no_data_reason, cn_today_str, is_cn_trading_day
+from ..table_utils import clean_table_for_display, table_to_markdown
 
 
 # ── akshare 并发控制 ──
@@ -518,16 +519,17 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
             parts = [f"## Fundamentals for {ticker}"]
             if info_df is not None and not info_df.empty:
+                info_df = clean_table_for_display(info_df)
                 for c in info_df.columns:
                     info_df[c] = info_df[c].astype(str).str.slice(0, 220)
                 parts.append("### Company Profile")
-                parts.append(info_df.head(40).to_markdown(index=False))
+                parts.append(table_to_markdown(info_df, max_rows=40, max_cols=len(info_df.columns)))
             if abstract_df is not None and not abstract_df.empty:
                 parts.append("### Financial Abstract (latest available columns)")
                 metric_cols = [c for c in abstract_df.columns if c not in ("选项", "指标")]
                 top_cols = metric_cols[:8]
                 cols = [c for c in ("选项", "指标") if c in abstract_df.columns] + top_cols
-                parts.append(self._shrink_table(abstract_df[cols], max_rows=20, max_cols=10).to_markdown(index=False))
+                parts.append(table_to_markdown(abstract_df[cols], max_rows=20, max_cols=10))
 
             if len(parts) > 1:
                 return "\n\n".join(parts)
@@ -546,7 +548,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 df = ak.stock_financial_report_sina(stock=symbol, symbol=report_name)
                 if df is None or df.empty:
                     raise ValueError("empty dataframe")
-                return self._shrink_table(df, max_rows=12, max_cols=18).to_markdown(index=False)
+                return table_to_markdown(df, max_rows=12, max_cols=18)
             except Exception as exc:
                 errors.append(f"stock_financial_report_sina: {type(exc).__name__}")
 
@@ -557,7 +559,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 df = ak.stock_financial_abstract_new_ths(symbol=code, indicator=indicator)
                 if df is None or df.empty:
                     raise ValueError("empty dataframe")
-                return self._shrink_table(df, max_rows=12, max_cols=18).to_markdown(index=False)
+                return table_to_markdown(df, max_rows=12, max_cols=18)
             except Exception as exc:
                 errors.append(f"stock_financial_abstract_new_ths: {type(exc).__name__}")
 
@@ -621,12 +623,24 @@ class CnAkshareProvider(BaseMarketDataProvider):
                     f"cn_akshare is temporarily unavailable for news: {exc}"
                 ) from exc
 
-    def get_global_news(self, curr_date: str) -> str:
-        result = self.get_sina_global_news(page="1", page_size="100", tag_id="1,4,7")
-        # get_sina_global_news 异常时返回 "新浪财经快讯获取失败：..." 字符串（truthy），需显式检查
-        if result and result.startswith("## "):
+    def get_global_news(
+        self, curr_date: str, look_back_days: int = 7, limit: int = 50
+    ) -> str:
+        end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+        start_date = (end_dt - timedelta(days=look_back_days)).strftime("%Y-%m-%d")
+        result = self.get_sina_global_news(
+            page="1",
+            page_size=str(min(max(limit, 1), 100)),
+            tag_id="1,4,7",
+            start_date=start_date,
+            end_date=curr_date,
+            limit=limit,
+        )
+        if result and result.startswith("## ") and "共0条" not in result:
             return result
-        return f"{curr_date} 未获取到全球市场新闻"
+        raise NotImplementedError(
+            f"cn_akshare 未获取到全球市场新闻（{start_date} 至 {curr_date}）"
+        )
 
     def get_insider_transactions(self, symbol: str, curr_date: str = None) -> str:
         ak = self._ak()
@@ -663,7 +677,14 @@ class CnAkshareProvider(BaseMarketDataProvider):
         )
 
     def get_sina_global_news(
-        self, page: str = "1", page_size: str = "20", zhibo_id: str = "152", tag_id: str = "0"
+        self,
+        page: str = "1",
+        page_size: str = "20",
+        zhibo_id: str = "152",
+        tag_id: str = "0",
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int | None = None,
     ) -> str:
         """获取新浪财经全球快讯（支持参数）
 
@@ -708,6 +729,14 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
                 rows = []
                 for time_str, content in zip(time_list, text_list):
+                    if start_date or end_date:
+                        published = pd.to_datetime(time_str, errors="coerce")
+                        if pd.isna(published):
+                            continue
+                        if start_date and published < datetime.strptime(start_date, "%Y-%m-%d"):
+                            continue
+                        if end_date and published >= datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1):
+                            continue
                     if not content or content == "nan":
                         continue
                     m = _re.match(r"^【(.+?)】(.*)", content, _re.DOTALL)
@@ -717,6 +746,8 @@ class CnAkshareProvider(BaseMarketDataProvider):
                         if body:
                             rows.append(body[:300])
                         rows.append("")
+                        if limit and len([row for row in rows if row.startswith("###")]) >= limit:
+                            break
 
                 # 每条新闻占3行（标题、正文可选、空行），计算实际输出的新闻数
                 actual_count = len([r for r in rows if r.startswith("###")])

@@ -10,9 +10,14 @@ from tradingagents.agents.utils.agent_states import current_tracker_var, extract
 def create_fundamentals_analyst(llm, data_collector=None):
     async def _safe(tool, payload):
         try:
-            return await asyncio.to_thread(tool.invoke, payload)
-        except Exception as exc:
-            return f"调用失败：{exc}"
+            result = await asyncio.to_thread(tool.invoke, payload)
+            if isinstance(result, str) and result.lstrip().lower().startswith(
+                ("error ", "no available vendor", "调用失败", "未获取到", "数据暂不可用")
+            ):
+                return "【数据不可用】该财务数据源当前没有可用结果，分析时请忽略该部分。"
+            return result
+        except Exception:
+            return "【数据不可用】该财务数据源当前没有可用结果，分析时请忽略该部分。"
 
     async def fundamentals_analyst_node(state):
         current_date = state["trade_date"]
@@ -31,25 +36,25 @@ def create_fundamentals_analyst(llm, data_collector=None):
         if pool is not None:
             outputs = {k: pool.get(k, "无数据") for k in
                        ["fundamentals", "balance_sheet", "cashflow", "income_statement"]}
+            financial_source = pool.get("_financial_data_source") or "未知"
         else:
-            from tradingagents.agents.utils.agent_utils import (
-                get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement,
+            from tradingagents.dataflows.interface import route_financial_bundle
+            bundle = await asyncio.to_thread(
+                route_financial_bundle,
+                ticker,
+                "quarterly",
+                current_date,
             )
-            tasks = {
-                "fundamentals": _safe(get_fundamentals, {"ticker": ticker, "curr_date": current_date}),
-                "balance_sheet": _safe(get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": current_date}),
-                "cashflow": _safe(get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": current_date}),
-                "income_statement": _safe(get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": current_date}),
-            }
-            keys = list(tasks.keys())
-            results = await asyncio.gather(*[tasks[k] for k in keys])
-            outputs = dict(zip(keys, results))
+            outputs = {k: bundle.get(k, "无数据") for k in
+                       ["fundamentals", "balance_sheet", "cashflow", "income_statement"]}
+            financial_source = bundle.get("_financial_data_source") or "未知"
 
         messages = [
             SystemMessage(content=system_message + "\n\n请全程使用中文。"),
             HumanMessage(content=(
                 horizon_ctx + "\n"
-                f"以下是 {ticker} 在 {current_date} 的基本面资料。\n\n"
+                f"以下是 {ticker} 在 {current_date} 的基本面资料。\n"
+                f"四张财务表统一数据源：{financial_source}；缺失值标记为“暂无数据”，不得按 0 计算。\n\n"
                 f"【get_fundamentals】\n{outputs['fundamentals']}\n\n"
                 f"【get_balance_sheet】\n{outputs['balance_sheet']}\n\n"
                 f"【get_cashflow】\n{outputs['cashflow']}\n\n"

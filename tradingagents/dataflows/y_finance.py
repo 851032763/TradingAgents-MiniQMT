@@ -3,8 +3,19 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import yfinance as yf
 import os
+import pandas as pd
 from .stockstats_utils import StockstatsUtils
 from .trade_calendar import cn_no_data_reason, is_cn_symbol
+
+
+def _display_value(value):
+    """Keep missing financial fields explicit instead of rendering ``nan``."""
+    try:
+        if pd.isna(value):
+            return "暂无数据"
+    except (TypeError, ValueError):
+        pass
+    return value
 
 def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
@@ -352,6 +363,7 @@ def get_fundamentals(
 
         lines = []
         for label, value in fields:
+            value = _display_value(value)
             if value is not None:
                 lines.append(f"{label}: {value}")
 
@@ -382,7 +394,9 @@ def get_balance_sheet(
             return f"No balance sheet data found for symbol '{ticker}'"
             
         # Convert to CSV string for consistency with other functions
-        csv_string = data.to_csv()
+        display_data = data.replace([float("inf"), float("-inf")], pd.NA)
+        display_data = display_data.astype(object).where(pd.notna(display_data), "暂无数据")
+        csv_string = display_data.to_csv()
         
         # Add header information
         header = f"# Balance Sheet data for {ticker.upper()} ({freq})\n"
@@ -412,7 +426,9 @@ def get_cashflow(
             return f"No cash flow data found for symbol '{ticker}'"
             
         # Convert to CSV string for consistency with other functions
-        csv_string = data.to_csv()
+        display_data = data.replace([float("inf"), float("-inf")], pd.NA)
+        display_data = display_data.astype(object).where(pd.notna(display_data), "暂无数据")
+        csv_string = display_data.to_csv()
         
         # Add header information
         header = f"# Cash Flow data for {ticker.upper()} ({freq})\n"
@@ -442,7 +458,9 @@ def get_income_statement(
             return f"No income statement data found for symbol '{ticker}'"
             
         # Convert to CSV string for consistency with other functions
-        csv_string = data.to_csv()
+        display_data = data.replace([float("inf"), float("-inf")], pd.NA)
+        display_data = display_data.astype(object).where(pd.notna(display_data), "暂无数据")
+        csv_string = display_data.to_csv()
         
         # Add header information
         header = f"# Income Statement data for {ticker.upper()} ({freq})\n"

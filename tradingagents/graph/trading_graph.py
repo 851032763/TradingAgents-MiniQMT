@@ -327,7 +327,11 @@ class TradingAgentsGraph:
 
         # Pre-collect data once (always full data); analysts will read from cache
         print(f"[TradingAgentsGraph] Collecting data for {ticker} {trade_date}…")
-        self.data_collector.collect(ticker, trade_date)
+        self.data_collector.collect(
+            ticker,
+            trade_date,
+            horizons=user_intent.get("horizons") or ["short"],
+        )
 
         graph_args = self.propagator.get_graph_args()
 

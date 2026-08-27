@@ -178,3 +178,63 @@ def route_to_vendor(method: str, *args, **kwargs):
         f"No available vendor for method '{method}'. "
         f"Configured chain: {fallback_vendors}"
     )
+
+
+FINANCIAL_METHODS = {
+    "fundamentals": "get_fundamentals",
+    "balance_sheet": "get_balance_sheet",
+    "cashflow": "get_cashflow",
+    "income_statement": "get_income_statement",
+}
+
+
+def _financial_result_is_usable(result: object) -> bool:
+    """Reject provider error/no-data strings before accepting a bundle."""
+    if not isinstance(result, str) or not result.strip():
+        return False
+    value = result.lstrip().lower()
+    return not (
+        value.startswith(("error ", "no ", "调用失败", "未获取到", "数据暂不可用"))
+        or "no available vendor" in value
+        or "未获取到" in value
+        or "数据暂不可用" in value
+    )
+
+
+def route_financial_bundle(ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> dict:
+    """Fetch all financial tables from one provider to preserve accounting scope."""
+    category = "fundamental_data"
+    vendor_config = get_vendor(category)
+    fallback_vendors = _resolve_vendor_chain("get_fundamentals", vendor_config)
+    args_summary = f"symbol={ticker!r} curr_date={curr_date!r}"
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            continue
+        try:
+            outputs: dict[str, str] = {}
+            for key, method in FINANCIAL_METHODS.items():
+                impl = getattr(provider, method, None)
+                if impl is None:
+                    raise NotImplementedError(f"{vendor} does not implement {method}")
+                if key == "fundamentals":
+                    result = impl(ticker, curr_date)
+                else:
+                    result = impl(ticker, freq, curr_date)
+                if not _financial_result_is_usable(result):
+                    raise NotImplementedError(f"{vendor} returned no usable {key} data")
+                outputs[key] = result
+            _trace(f"financial_bundle {args_summary} vendor={vendor} status=hit")
+            return {"_financial_data_source": vendor, **outputs}
+        except Exception as exc:
+            _trace(
+                f"financial_bundle {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+
+    unavailable = "【数据不可用】未获取到同一数据源的完整财务报表，本次分析不进行定量判断。"
+    return {
+        "_financial_data_source": None,
+        **{key: unavailable for key in FINANCIAL_METHODS},
+    }

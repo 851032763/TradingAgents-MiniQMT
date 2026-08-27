@@ -16,6 +16,7 @@ from stockstats import wrap
 from .base import BaseMarketDataProvider
 from ..config import get_config
 from ..trade_calendar import cn_no_data_reason
+from ..table_utils import table_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +536,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         if not isinstance(row, dict):
             return f"## Fundamentals for {ticker}\n\n未获取到公司基本信息。"
         df = pd.DataFrame([{k: str(v)[:500] for k, v in row.items()}])
-        table = self._shrink_table(df, max_rows=2, max_cols=24).to_string(index=False)
+        table = table_to_markdown(df, max_rows=2, max_cols=24)
         return f"## Fundamentals for {ticker}（今日投资 company/profiles）\n\n{table}"
 
     @staticmethod
@@ -590,7 +591,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         if not rows:
             return f"## {title_cn} ({ticker})\n\n未获取到报表数据（今日投资 {path}）。"
         df = pd.DataFrame(rows)
-        table = self._shrink_table(df, max_rows=12, max_cols=18).to_string(index=False)
+        table = table_to_markdown(df, max_rows=12, max_cols=18)
         freq_note = "单季度" if self._is_quarterly_freq(freq) else "合并/报告期口径以接口为准"
         return (
             f"## {title_cn} ({ticker}) — 今日投资 {path}（{freq_note}）\n\n{table}"

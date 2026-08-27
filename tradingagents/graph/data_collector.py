@@ -14,10 +14,6 @@ import io
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
-    get_fundamentals,
-    get_balance_sheet,
-    get_cashflow,
-    get_income_statement,
     get_news,
     get_global_news,
     get_insider_transactions,
@@ -27,6 +23,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_zt_pool,
     get_hot_stocks_xq,
 )
+from tradingagents.dataflows.interface import route_financial_bundle
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -34,6 +31,7 @@ INDICATORS = [
 ]
 SHORT_DAYS = 14
 LONG_DAYS = 90
+FINANCIAL_METHOD_KEYS = ("fundamentals", "balance_sheet", "cashflow", "income_statement")
 
 # 网络丢包时单个数据源可能永久卡死（SSL 握手/读无超时），必须给整轮抓取
 # 设硬上限，否则卡死线程会拿着 per-key 锁把后续同标的分析全部拖死，
@@ -248,26 +246,38 @@ def make_cache_key(ticker: str, trade_date: str) -> str:
     return f"{ticker}_{trade_date}"
 
 
-def _safe(tool, payload: dict) -> Any:
+def _unavailable_message(name: str) -> str:
+    return f"【数据不可用】{name} 当前没有可用结果，分析时请忽略该部分。"
+
+
+def _safe(tool, payload: dict, label: str | None = None) -> Any:
     start_t = time.time()
     try:
-        res = tool.invoke(payload)
+        res = tool.invoke(payload) if hasattr(tool, "invoke") else tool(**payload)
         duration = time.time() - start_t
         # 仅在耗时较长时输出
         if duration > 0.5:
             print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
+        if isinstance(res, str):
+            normalized = res.lstrip().lower()
+            if normalized.startswith(("error ", "no available vendor", "调用失败", "未获取到", "数据暂不可用")):
+                print(f"  [Warning] {label or getattr(tool, 'name', str(tool))} returned an error result")
+                return _unavailable_message(label or getattr(tool, "name", "data"))
         return res
     except Exception as exc:
-        return f"{getattr(tool, 'name', str(tool))} 调用失败：{type(exc).__name__}: {exc}"
+        name = label or getattr(tool, "name", str(tool))
+        print(f"  [Warning] {name} unavailable: {type(exc).__name__}")
+        return _unavailable_message(name)
 
 
-def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+def _fetch_all(ticker: str, trade_date: str, horizons: Optional[List[str]] = None) -> Dict[str, Any]:
     """Fetch all data sources in parallel.
 
-    Always fetches full data including financial statements, regardless of horizon.
-    The horizon only affects the analysis window, not data collection.
+    Fetches full market/financial data; the horizon selects the news look-back
+    window while the longer history needed for indicators remains unchanged.
     """
-    lookback = LONG_DAYS
+    requested_horizons = set(horizons or ["short"])
+    lookback = LONG_DAYS if "medium" in requested_horizons else SHORT_DAYS
     end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
     # 为了计算指标准确（如 200 SMA），需要比分析窗口更长的历史数据
     fetch_lookback = 365
@@ -287,10 +297,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
     tasks.update({
-        "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
-        "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
-        "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
-        "income_statement": (get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "financial_bundle": (route_financial_bundle, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
     })
 
     results: Dict[str, Any] = {}
@@ -298,17 +305,26 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     # 减少并发池大小，避免被反爬
     executor = ThreadPoolExecutor(max_workers=min(10, len(tasks)))
     try:
-        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        future_to_key = {executor.submit(_safe, tool, payload, key): key for key, (tool, payload) in tasks.items()}
         done, not_done = futures_wait(set(future_to_key), timeout=FETCH_ALL_TIMEOUT)
         for future in done:
             results[future_to_key[future]] = future.result()
         for future in not_done:
             key = future_to_key[future]
-            results[key] = f"{key} 数据拉取超时（>{FETCH_ALL_TIMEOUT}s），本次分析跳过该数据源"
+            results[key] = _unavailable_message(key)
             print(f"  [Warning] {key} fetch timed out after {FETCH_ALL_TIMEOUT}s, skipped")
     finally:
         # wait=False：卡死的抓取线程留给 socket 超时自行了断，绝不反过来堵住本线程
         executor.shutdown(wait=False, cancel_futures=True)
+
+    bundle = results.pop("financial_bundle", None)
+    if isinstance(bundle, dict):
+        results.update({key: bundle.get(key, _unavailable_message(key)) for key in FINANCIAL_METHOD_KEYS})
+        results["_financial_data_source"] = bundle.get("_financial_data_source")
+    else:
+        results.update({key: _unavailable_message(key) for key in FINANCIAL_METHOD_KEYS})
+        results["_financial_data_source"] = None
+    results["_news_data_window"] = f"{lookback}天"
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
@@ -395,7 +411,7 @@ class DataCollector:
             )
         try:
             if key not in self._cache:
-                self._cache[key] = _fetch_all(ticker, trade_date)
+                self._cache[key] = _fetch_all(ticker, trade_date, horizons=horizons)
             return self._cache[key]
         finally:
             key_lock.release()
