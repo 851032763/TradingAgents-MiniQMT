@@ -302,8 +302,11 @@ curl -X POST 'https://app.510168.xyz/v1/analyze' \
 
 本项目核心架构灵感与部分基础逻辑源自 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)。感谢原作者及团队在多智能体交易领域做出的卓越探索与开源贡献。
 
+本项目基于 [KylinMountain/TradingAgents-AShare](https://github.com/KylinMountain/TradingAgents-AShare)二次开发。感谢原作者及团队在多智能体交易领域做出的卓越探索与开源贡献。
+
 ## 许可说明
 - 本项目基于 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (Apache 2.0) 二次开发。
+- 本项目基于 [KylinMountain/TradingAgents-AShare](https://github.com/KylinMountain/TradingAgents-AShare)(Apache 2.0) 二次开发。
 - 新增模块 (`api/`, `frontend/`) 及对核心逻辑的深度修改采用 `PolyForm Noncommercial 1.0.0` 协议。
 - 详情请参阅根目录下的 [LICENSE](./LICENSE) 文件。
 
