@@ -1,0 +1,19 @@
+services:
+  kronos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wissenquant-kronos
+    ports:
+      - "8101:8101"
+    environment:
+      KRONOS_HOST: 0.0.0.0
+      KRONOS_SERVICE_PORT: 8101
+      KRONOS_DEFAULT_MODEL: ${KRONOS_DEFAULT_MODEL:-base}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3

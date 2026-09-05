@@ -1,0 +1,19 @@
+# Optional NVIDIA CUDA image for GPU inference.
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    KRONOS_HOST=0.0.0.0 \
+    KRONOS_SERVICE_PORT=8101 \
+    KRONOS_DEFAULT_MODEL=base
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+
+EXPOSE 8101
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=5)"
+
+CMD ["python", "main.py"]

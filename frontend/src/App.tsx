@@ -4,6 +4,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Analysis from './pages/Analysis'
+import KronosPrediction from './pages/KronosPrediction'
 import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 import Portfolio from './pages/Portfolio'
@@ -57,6 +58,7 @@ function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/tracking-board" element={<TrackingBoard />} />
                   <Route path="/analysis" element={<Analysis />} />
+                  <Route path="/kronos" element={<KronosPrediction />} />
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/portfolio" element={<Portfolio />} />
                   <Route path="/settings" element={<Settings />} />

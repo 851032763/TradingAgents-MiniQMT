@@ -310,6 +310,52 @@ export interface KlineResponse {
     realtime_supported?: boolean
 }
 
+export interface KronosHealth {
+    status: 'ready' | 'loading' | string
+    model: string
+    device: string
+    vram_used_mb?: number | null
+    vram_total_mb?: number | null
+}
+
+export interface KronosModelInfo {
+    available_models: Record<string, string>
+    current_model?: string | null
+    loading: boolean
+}
+
+export interface KronosKlineDataPoint {
+    open: number
+    high: number
+    low: number
+    close: number
+    volume: number
+    amount: number
+}
+
+export interface KronosPredictRequest {
+    klines: KronosKlineDataPoint[]
+    pred_len: number
+    temperature: number
+    top_p: number
+    sample_count: number
+    freq: string
+}
+
+export interface KronosPrediction extends KronosKlineDataPoint {
+    [key: string]: number
+}
+
+export interface KronosPredictResponse {
+    success: boolean
+    predictions?: KronosPrediction[] | null
+    lookback: number
+    pred_len: number
+    inference_time_ms: number
+    vram_used_mb?: number | null
+    error?: string | null
+}
+
 // Structured extraction types
 export interface RiskItem {
     name: string

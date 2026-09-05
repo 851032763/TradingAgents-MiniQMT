@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, KronosHealth, KronosModelInfo, KronosPredictRequest, KronosPredictResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -7,6 +7,15 @@ export function getBaseUrl(): string {
         return window.location.origin.replace(/\/$/, '')
     }
     return 'http://localhost:8000'
+}
+
+export function getKronosBaseUrl(): string {
+    const envUrl = (import.meta.env.VITE_KRONOS_URL as string) || ''
+    if (envUrl) return envUrl.replace(/\/$/, '')
+    if (typeof window !== 'undefined' && window.location?.origin) {
+        return `${window.location.origin.replace(/\/$/, '')}/kronos-api`
+    }
+    return 'http://localhost:8101'
 }
 
 
@@ -58,6 +67,43 @@ class ApiService {
         }
 
         return JSON.parse(raw) as T
+    }
+
+    private async kronosRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
+        const response = await fetch(`${getKronosBaseUrl()}${endpoint}`, {
+            ...options,
+            headers: {
+                'Content-Type': 'application/json',
+                ...options?.headers,
+            },
+        })
+        if (!response.ok) {
+            const data = await response.json().catch(() => null)
+            throw new Error(data?.detail || data?.message || `Kronos 服务请求失败（${response.status}）`)
+        }
+        return response.json() as Promise<T>
+    }
+
+    async getKronosHealth(): Promise<KronosHealth> {
+        return this.kronosRequest<KronosHealth>('/health')
+    }
+
+    async getKronosModelInfo(): Promise<KronosModelInfo> {
+        return this.kronosRequest<KronosModelInfo>('/models/info')
+    }
+
+    async switchKronosModel(modelKey: string): Promise<{ success: boolean; model: string }> {
+        return this.kronosRequest('/models/switch', {
+            method: 'POST',
+            body: JSON.stringify({ model_key: modelKey }),
+        })
+    }
+
+    async predictKronos(request: KronosPredictRequest): Promise<KronosPredictResponse> {
+        return this.kronosRequest<KronosPredictResponse>('/predict', {
+            method: 'POST',
+            body: JSON.stringify(request),
+        })
     }
 
     async startAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {

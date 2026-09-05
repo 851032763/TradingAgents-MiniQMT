@@ -1,0 +1,6 @@
+services:
+  kronos:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    gpus: all
