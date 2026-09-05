@@ -11,6 +11,13 @@
 
 README 仅保留近期更新摘要；完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。后续更新请按版本号倒序追加。
 
+### v0.5.3 - 2026-09-05
+
+- **Kronos 预测工作台**：导航栏新增“kronos预测”功能模板，支持对股票 OHLCVA 序列进行时序预测并在图表中对比历史收盘价与预测路径。
+- **Kronos 配置**：支持日线、小时、分钟频率，以及历史窗口、预测长度、Temperature、Top-p、采样次数和 Kronos-small/base 模型切换。
+- **独立预测服务**：新增 `kronos_service` 微服务，提供模型健康检查、模型信息、模型切换和预测接口；前端开发服务器通过 `/kronos-api` 代理访问。
+- **服务可观测性**：预测页面展示 Kronos 服务状态、运行设备、当前模型和推理耗时，并支持保存浏览器中的预测配置。
+
 ### v0.5.2 - 2026-08-27
 
 - **分析报告数据质量**：新闻数据源限流、请求失败或无数据时统一降级为“数据不可用”，不再向报告暴露错误码、异常堆栈或供应商技术信息。
@@ -72,6 +79,21 @@ OpenAI、Anthropic、Google Gemini、DeepSeek、Moonshot、智谱、硅基流动
 <div align="center">
   <img src="assets/web/settings.png" width="80%" alt="定时分析"/>
 </div>
+
+### Kronos 预测工作台
+
+导航栏中的“kronos预测”页面用于运行 Kronos 金融时序模型。输入股票代码后，可以选择日线、小时或分钟数据，调整历史窗口与预测长度，并配置 Temperature、Top-p 和采样次数。页面会展示历史收盘路径、Kronos 预测路径、预测变化和推理耗时，同时提供 Kronos-small/base 模型切换及服务状态检查。
+
+Kronos 由独立的 `kronos_service` 提供推理能力，默认监听 `8101` 端口。服务启动后可通过以下接口检查和调用：
+
+| 操作 | 接口 |
+|------|------|
+| 健康检查 | `GET /health` |
+| 模型信息 | `GET /models/info` |
+| 切换模型 | `POST /models/switch` |
+| 发起预测 | `POST /predict` |
+
+前端开发环境会将 `/kronos-api/*` 代理到 `http://localhost:8101/*`；部署到反向代理或独立主机时，可通过 `VITE_KRONOS_URL` 指定浏览器可访问的服务地址。
 
 ## 核心架构
 
@@ -173,6 +195,16 @@ Docker 容器使用 SQLite 时建议挂载 `/app/data`，否则容器删除后�
 
 > 📖 更多部署拓扑（分开部署、旧版镜像升级迁移）与全部环境变量说明，见 [guide/ 配置与部署指南](guide/)。
 
+#### Docker 启用 Kronos 预测
+
+Kronos 服务使用独立镜像和端口，可在项目根目录执行：
+
+```bash
+docker compose -f kronos_service/docker-compose.yml up -d --build
+```
+
+服务启动后监听 `http://localhost:8101`。如果前端运行在生产容器的 `8000` 端口，需要在反向代理中将 `/kronos-api` 转发到 Kronos 服务，或在构建前端时设置 `VITE_KRONOS_URL=http://localhost:8101`，并确保 `KRONOS_CORS_ORIGINS` 包含前端访问地址。GPU 主机可改用 `kronos_service/docker-compose.gpu.yml`。
+
 ### 源码安装
 
 ```bash
@@ -207,6 +239,38 @@ npm run dev
 ```
 
 前端开发服务器默认运行在 `http://localhost:5173`，后端仍保持 `http://localhost:8000`。
+
+#### 本地启动全部服务
+
+使用 Kronos 预测功能时，需要同时运行前端、主 API、定时任务调度器和 Kronos 服务。建议使用 Python 3.11 创建项目虚拟环境；Kronos 服务默认使用 CPU，也可在具备 CUDA 环境时按需配置 GPU。
+
+首次运行时，先安装 Kronos 服务依赖：
+
+```powershell
+cd kronos_service
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd ..
+```
+
+```powershell
+# 终端 1：主 API
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+
+# 终端 2：定时任务调度器
+.\.venv\Scripts\python.exe -m scheduler.main
+
+# 终端 3：Kronos 预测服务
+.\kronos_service\.venv\Scripts\python.exe kronos_service\main.py
+
+# 终端 4：前端开发服务器
+cd frontend
+npm run dev
+```
+
+启动后访问 `http://127.0.0.1:5173`，主 API 健康检查为 `http://127.0.0.1:8000/healthz`，Kronos 健康检查为 `http://127.0.0.1:8101/health`。如果没有为 `kronos_service` 单独创建虚拟环境，可将第三条命令中的 Python 路径替换为已安装 Kronos 依赖的 Python 解释器，或直接执行 `powershell -ExecutionPolicy Bypass -File kronos_service\start.ps1 -Cpu`。
+
+Kronos 服务的依赖位于 [`kronos_service/requirements.txt`](kronos_service/requirements.txt)，模型目录为 `kronos_service/kronos-base` 和 `kronos_service/kronos-small`。如需修改监听地址、端口或默认模型，可设置 `KRONOS_HOST`、`KRONOS_SERVICE_PORT` 和 `KRONOS_DEFAULT_MODEL`。
 
 ### 数据源与 MiniQMT
 
@@ -314,13 +378,3 @@ curl -X POST 'https://app.510168.xyz/v1/analyze' \
 - **仅供学习研究**：本项目仅用于学术研究、技术演示及学习交流目的，不构成任何形式的投资建议。
 - **实盘风险**：证券市场有风险，投资需谨慎。基于本系统生成的任何观点、建议或计划，仅代表算法博弈结果，不对实际投资损益负责。
 - **数据延迟**：分析所依赖的数据源可能存在延迟或偏差，请以交易所实时公告为准。
-
-<div align="center">
-<a href="https://www.star-history.com/#KylinMountain/TradingAgents-AShare&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=KylinMountain/TradingAgents-AShare&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=KylinMountain/TradingAgents-AShare&type=Date" />
-   <img alt="TradingAgents Star History" src="https://api.star-history.com/svg?repos=KylinMountain/TradingAgents-AShare&type=Date" style="width: 80%; height: auto;" />
- </picture>
-</a>
-</div>
