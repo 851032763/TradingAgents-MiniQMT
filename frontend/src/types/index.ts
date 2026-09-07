@@ -310,6 +310,54 @@ export interface KlineResponse {
     realtime_supported?: boolean
 }
 
+export interface TradingDatesResponse {
+    after_date: string
+    dates: string[]
+}
+
+export type MiniQMTSyncStatus = 'idle' | 'inspecting' | 'running' | 'completed' | 'failed'
+
+export interface MiniQMTDataTypeStat {
+    key: string
+    label: string
+    detail: string
+    statistics: {
+        symbols?: number
+        failed?: number
+        start_date?: string | null
+        end_date?: string | null
+        updated_at?: string | null
+    }
+}
+
+export interface MiniQMTSymbolDataType {
+    key: string
+    label: string
+    detail: string
+    status: 'complete' | 'failed' | 'missing' | 'unsupported' | 'unknown'
+    start_date?: string | null
+    end_date?: string | null
+    updated_at?: string | null
+    note?: string | null
+}
+
+export interface MiniQMTSyncState {
+    status: MiniQMTSyncStatus
+    started_at?: string | null
+    finished_at?: string | null
+    message: string
+    scope?: 'selected' | 'market'
+    selected_types: string[]
+    progress: { completed: number; total: number; current?: string | null }
+    errors: string[]
+    data_types: MiniQMTDataTypeStat[]
+    selected_symbol?: {
+        symbol: string
+        complete: boolean
+        types: MiniQMTSymbolDataType[]
+    }
+}
+
 export interface KronosHealth {
     status: 'ready' | 'loading' | string
     model: string

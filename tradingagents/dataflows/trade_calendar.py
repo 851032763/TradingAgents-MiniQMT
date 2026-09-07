@@ -49,32 +49,17 @@ def is_cn_symbol(symbol: str) -> bool:
 def is_cn_trading_day(date_str: str) -> bool:
     d = _parse_date(date_str)
     dates, dates_set = _load_cn_trade_dates()
-    if dates:
+    if dates and dates[0] <= d <= dates[-1]:
         return d in dates_set
     return d.weekday() < 5
 
 
 def previous_cn_trading_day(date_str: str) -> str:
     d = _parse_date(date_str)
-    dates, _ = _load_cn_trade_dates()
-    if dates:
-        idx = 0
-        # 找到首个 >= d 的位置
-        lo, hi = 0, len(dates)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if dates[mid] < d:
-                lo = mid + 1
-            else:
-                hi = mid
-        idx = lo - 1
-        if idx >= 0:
-            return dates[idx].strftime("%Y-%m-%d")
-    # Fallback to weekend-only rollback
     cur = d
     while True:
         cur = cur.fromordinal(cur.toordinal() - 1)
-        if cur.weekday() < 5:
+        if is_cn_trading_day(cur.strftime("%Y-%m-%d")):
             return cur.strftime("%Y-%m-%d")
 
 
@@ -99,6 +84,42 @@ def cn_market_phase(now: datetime | None = None) -> str:
     if time(13, 0) <= t < time(15, 0):
         return "in_session"
     return "post_close"
+
+
+def latest_cn_data_date(end_date: str, now: datetime | None = None) -> str:
+    """Return the latest market date that can have data for a request.
+
+    Future and non-trading end dates roll back to the latest trading day.  A
+    request made before today's open also rolls back because today's daily bar
+    does not exist yet.
+    """
+    current = now or now_cn()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=CN_TZ)
+    else:
+        current = current.astimezone(CN_TZ)
+
+    requested = min(_parse_date(end_date), current.date())
+    requested_text = requested.strftime("%Y-%m-%d")
+    if requested == current.date() and cn_market_phase(current) == "pre_open":
+        return previous_cn_trading_day(requested_text)
+    if is_cn_trading_day(requested_text):
+        return requested_text
+    return previous_cn_trading_day(requested_text)
+
+
+def next_cn_trading_days(after_date: str, count: int) -> list[str]:
+    """Return trading dates strictly after ``after_date`` in ascending order."""
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    current = _parse_date(after_date)
+    result: list[str] = []
+    while len(result) < count:
+        current = current.fromordinal(current.toordinal() + 1)
+        text = current.strftime("%Y-%m-%d")
+        if is_cn_trading_day(text):
+            result.append(text)
+    return result
 
 
 def cn_no_data_reason(date_str: str) -> str:

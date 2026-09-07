@@ -45,6 +45,7 @@ import pandas as pd
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service
+from api.services.miniqmt_sync_service import DATA_TYPES as MINIQMT_DATA_TYPES, get_miniqmt_sync_service
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -67,7 +68,7 @@ from tradingagents.graph.data_collector import DataCollector
 
 # 全局共享 DataCollector：同一 ticker+date 的数据只拉一次，所有 job 复用缓存
 _shared_data_collector = DataCollector()
-from tradingagents.dataflows.trade_calendar import cn_today_str
+from tradingagents.dataflows.trade_calendar import cn_today_str, latest_cn_data_date, next_cn_trading_days
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.graph.intent_parser import parse_intent as _parse_intent
@@ -684,6 +685,16 @@ class KlineResponse(BaseModel):
     degraded: bool = False
     message: Optional[str] = None
     realtime_supported: bool = False
+
+
+class TradingDatesResponse(BaseModel):
+    after_date: str
+    dates: List[str]
+
+
+class MiniQMTSyncRequest(BaseModel):
+    data_types: List[str] = Field(default_factory=lambda: list(MINIQMT_DATA_TYPES))
+    symbols: List[str] = Field(default_factory=list, max_length=100)
 
 
 # Report API Models
@@ -2637,8 +2648,12 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
     return []
 
 
-def _merge_realtime_daily_candle(symbol: str, candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Overlay the latest MiniQMT quote onto today's daily candle."""
+def _merge_realtime_daily_candle(
+    symbol: str,
+    candles: List[Dict[str, Any]],
+    end_date: str,
+) -> List[Dict[str, Any]]:
+    """Overlay the latest MiniQMT quote onto the expected market-day candle."""
     try:
         raw = route_to_vendor("get_realtime_quotes", [symbol])
         payload = json.loads(raw) if isinstance(raw, str) else raw
@@ -2646,12 +2661,13 @@ def _merge_realtime_daily_candle(symbol: str, candles: List[Dict[str, Any]]) -> 
         if not quote or quote.get("price") is None:
             return candles
         quote_time = _parse_quote_time(quote.get("quote_time"))
-        today = cn_today_str()
-        if quote_time.strftime("%Y-%m-%d") != today:
+        quote_date = quote_time.strftime("%Y-%m-%d")
+        expected_date = latest_cn_data_date(end_date)
+        if quote_date != expected_date:
             return candles
         price = float(quote["price"])
         current = {
-            "date": today,
+            "date": quote_date,
             "open": float(quote.get("open") or price),
             "high": float(quote.get("high") or price),
             "low": float(quote.get("low") or price),
@@ -2663,7 +2679,7 @@ def _merge_realtime_daily_candle(symbol: str, candles: List[Dict[str, Any]]) -> 
             "source": "miniqmt",
         }
         for index, candle in enumerate(candles):
-            if candle.get("date") == today:
+            if candle.get("date") == quote_date:
                 candles[index] = {**candle, **current}
                 return candles
         return [*candles, current]
@@ -2839,7 +2855,7 @@ def get_kline(
         set_config(config)
         raw = route_to_vendor("get_stock_data", symbol, start, end)
         candles = _parse_stock_csv(raw)
-    candles = _merge_realtime_daily_candle(symbol, candles)
+    candles = _merge_realtime_daily_candle(symbol, candles, end)
     if not candles:
         raise HTTPException(status_code=404, detail="no kline data")
     return KlineResponse(
@@ -2851,6 +2867,19 @@ def get_kline(
         source="miniqmt" if _is_cn_index_symbol(symbol) else "provider",
         realtime_supported=False,
     )
+
+
+@app.get("/v1/market/trading-dates", response_model=TradingDatesResponse)
+def get_trading_dates(
+    after_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    count: int = Query(30, ge=1, le=512),
+) -> TradingDatesResponse:
+    """Return future A-share trading dates from the shared market calendar."""
+    try:
+        dates = next_cn_trading_days(after_date, count)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TradingDatesResponse(after_date=after_date, dates=dates)
 
 
 def _parse_quote_time(value: Any) -> datetime:
@@ -4263,6 +4292,31 @@ async def warmup_wecom_webhook(
 
 
 # ── Stock Search ──────────────────────────────────────────────────────────────
+
+@app.get("/v1/miniqmt/sync")
+def get_miniqmt_sync_status(
+    symbol: Optional[str] = Query(None, min_length=1, max_length=20),
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Return MiniQMT local-cache progress and an optional symbol inspection."""
+    try:
+        return get_miniqmt_sync_service().get_status(symbol)
+    except (ValueError, NotImplementedError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/miniqmt/sync")
+def start_miniqmt_sync(
+    body: MiniQMTSyncRequest,
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Start a serial local MiniQMT cache synchronization task."""
+    try:
+        return get_miniqmt_sync_service().start(body.data_types, body.symbols)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 @app.get("/v1/market/stock-search")
 def search_stocks(

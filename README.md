@@ -339,6 +339,7 @@ cn_miniqmt -> cn_akshare -> cn_baostock -> cn_investoday -> yfinance -> alpha_va
 | 批量获取最新报告 | `POST /v1/reports/latest-by-symbols` |
 | 持仓导入 | `GET/POST/DELETE /v1/portfolio/imports` |
 | 跟踪看板摘要/明细 | `GET /v1/dashboard/tracking-board` |
+| 获取未来 A 股交易日 | `GET /v1/market/trading-dates` |
 | 批量定时任务操作 | `PATCH /v1/scheduled/batch`、`POST /v1/scheduled/batch/delete`、`POST /v1/scheduled/batch/trigger` |
 | 模型 warmup | `POST /v1/config/warmup` |
 

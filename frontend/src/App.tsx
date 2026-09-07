@@ -9,6 +9,7 @@ import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 import Portfolio from './pages/Portfolio'
 import TrackingBoard from './pages/TrackingBoard'
+import MiniQMTSync from './pages/MiniQMTSync'
 import Login from './pages/Login'
 import Feedback from './pages/Feedback'
 import Sponsor from './pages/Sponsor'
@@ -57,6 +58,7 @@ function App() {
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/tracking-board" element={<TrackingBoard />} />
+                  <Route path="/miniqmt-sync" element={<MiniQMTSync />} />
                   <Route path="/analysis" element={<Analysis />} />
                   <Route path="/kronos" element={<KronosPrediction />} />
                   <Route path="/reports" element={<Reports />} />

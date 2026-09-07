@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, KronosHealth, KronosModelInfo, KronosPredictRequest, KronosPredictResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, MiniQMTSyncState, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TradingDatesResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, KronosHealth, KronosModelInfo, KronosPredictRequest, KronosPredictResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -58,7 +58,11 @@ class ApiService {
         const contentType = response.headers.get('content-type') || ''
         if (!contentType.includes('application/json')) {
             const text = await response.text()
-            return (text ? (text as T) : undefined) as T
+            const responseKind = contentType || '未知类型'
+            const preview = text.replace(/\s+/g, ' ').trim().slice(0, 120)
+            throw new Error(
+                `接口返回了非 JSON 内容（${responseKind}）${preview ? `：${preview}` : ''}`,
+            )
         }
 
         const raw = await response.text()
@@ -129,9 +133,27 @@ class ApiService {
         return this.request<KlineResponse>(`/v1/market/kline?${params}`)
     }
 
+    async getTradingDates(afterDate: string, count: number): Promise<string[]> {
+        const params = new URLSearchParams({ after_date: afterDate, count: String(count) })
+        const response = await this.request<TradingDatesResponse>(`/v1/market/trading-dates?${params}`)
+        return response.dates
+    }
+
     getKlineStreamUrl(symbol: string, period: '1d' | '5m' | '1m'): string {
         const params = new URLSearchParams({ symbol, period })
         return `${getBaseUrl()}/v1/market/kline/stream?${params}`
+    }
+
+    async getMiniQMTSyncStatus(symbol?: string): Promise<MiniQMTSyncState> {
+        const params = symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''
+        return this.request<MiniQMTSyncState>(`/v1/miniqmt/sync${params}`)
+    }
+
+    async startMiniQMTSync(dataTypes: string[], symbols?: string[]): Promise<MiniQMTSyncState> {
+        return this.request<MiniQMTSyncState>('/v1/miniqmt/sync', {
+            method: 'POST',
+            body: JSON.stringify({ data_types: dataTypes, symbols: symbols || [] }),
+        })
     }
 
     async chatCompletion(

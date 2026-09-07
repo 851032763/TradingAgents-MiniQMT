@@ -20,7 +20,13 @@ from stockstats import wrap
 
 from .base import BaseMarketDataProvider
 from ..table_utils import table_to_markdown
-from ..trade_calendar import cn_market_phase, cn_no_data_reason, is_cn_trading_day, now_cn
+from ..trade_calendar import (
+    cn_market_phase,
+    cn_no_data_reason,
+    is_cn_trading_day,
+    latest_cn_data_date,
+    now_cn,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -229,6 +235,26 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
             ) from exc
 
     @staticmethod
+    def _quote_datetime(value: Any) -> datetime | None:
+        """Parse MiniQMT's quote timestamp into China local time."""
+        try:
+            number = float(value)
+            if number > 10**11:
+                return datetime.fromtimestamp(number / 1000, tz=CN_TZ)
+            if number > 10**9:
+                return datetime.fromtimestamp(number, tz=CN_TZ)
+        except (TypeError, ValueError, OSError):
+            pass
+
+        try:
+            parsed = pd.to_datetime(value, errors="raise")
+            if parsed.tzinfo is None:
+                return parsed.to_pydatetime().replace(tzinfo=CN_TZ)
+            return parsed.tz_convert(CN_TZ).to_pydatetime()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
     def _as_frame(result: Any, code: str) -> pd.DataFrame:
         if isinstance(result, dict):
             candidate = result.get(code)
@@ -312,8 +338,15 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
             raise NotImplementedError(
                 f"cn_miniqmt daily history request failed for {code}: {type(exc).__name__}: {exc}"
             ) from exc
-        if df.empty and self._auto_download_enabled():
-            self._download_if_enabled(code, start_date, query_end)
+        expected_date = datetime.strptime(latest_cn_data_date(end_date), "%Y-%m-%d").date()
+        latest_date = None if df.empty else df["Date"].max().date()
+        if self._auto_download_enabled() and (latest_date is None or latest_date < expected_date):
+            refresh_start = start_date if latest_date is None else (latest_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            logger.info(
+                "[MiniQMT] daily history is stale: code=%s latest=%s expected=%s",
+                code, latest_date, expected_date,
+            )
+            self._download_if_enabled(code, refresh_start, query_end)
             df = fetch()
         df = self._merge_realtime_daily_bar(symbol, end_date, df)
         logger.info("[MiniQMT] daily history read completed: code=%s rows=%d", code, len(df))
@@ -325,7 +358,7 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
         end_date: str,
         history: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Overlay MiniQMT's latest full tick onto today's daily OHLCV bar.
+        """Overlay MiniQMT's latest full tick onto the latest market-day bar.
 
         MiniQMT's downloaded daily cache can lag the live quote.  The analysis
         pipeline uses this daily frame to calculate technical and volume-price
@@ -333,30 +366,27 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
         the chart API.
         """
         try:
-            requested_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError:
             return history
 
-        current_time = now_cn()
-        today = current_time.date()
-        if requested_end != today or not is_cn_trading_day(today.strftime("%Y-%m-%d")):
-            return history
-        if cn_market_phase(current_time) in ("pre_open", "closed"):
-            return history
+        expected_date = datetime.strptime(latest_cn_data_date(end_date), "%Y-%m-%d").date()
 
         code = self._normalize_symbol(symbol)
         try:
             ticks = self._xtdata().get_full_tick([code])
             tick = ticks.get(code, {}) if isinstance(ticks, dict) else {}
             price = self._number(tick.get("lastPrice", tick.get("last_price")))
-            if price is None:
+            quote_time = self._quote_datetime(tick.get("time"))
+            quote_date = quote_time.date() if quote_time is not None else None
+            if price is None or quote_date != expected_date:
                 return history
 
             open_price = self._number(tick.get("open")) or price
             high_price = self._number(tick.get("high")) or price
             low_price = self._number(tick.get("low")) or price
             row = pd.DataFrame([{
-                "Date": pd.Timestamp(today),
+                "Date": pd.Timestamp(quote_date),
                 "Open": open_price,
                 "High": high_price,
                 "Low": low_price,
@@ -370,7 +400,7 @@ class CnMiniQMTProvider(BaseMarketDataProvider):
 
             merged = pd.concat([history, row], ignore_index=True)
             merged = merged.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-            logger.info("[MiniQMT] overlaid live daily bar: code=%s date=%s", code, today)
+            logger.info("[MiniQMT] overlaid latest daily bar: code=%s date=%s", code, quote_date)
             return merged.reset_index(drop=True)
         except Exception as exc:
             logger.warning(

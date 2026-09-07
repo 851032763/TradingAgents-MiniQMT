@@ -83,6 +83,12 @@ function formatDate(value: string) {
     return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
+function formatTooltipDate(value: string, frequency: KronosConfig['frequency']) {
+    if (frequency === 'D') return value.slice(0, 10).replace(/-/g, '/')
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+}
+
 function nextDate(dateText: string, frequency: KronosConfig['frequency'], offset: number) {
     const date = new Date(dateText)
     if (Number.isNaN(date.getTime())) return `${dateText}-${offset + 1}`
@@ -116,6 +122,7 @@ export default function KronosPrediction() {
     const [modelInfo, setModelInfo] = useState<KronosModelInfo | null>(null)
     const [candles, setCandles] = useState<KlineCandle[]>([])
     const [predictions, setPredictions] = useState<KronosPredictionPoint[]>([])
+    const [forecastDates, setForecastDates] = useState<string[]>([])
     const [inferenceTimeMs, setInferenceTimeMs] = useState<number | null>(null)
     const [loadingService, setLoadingService] = useState(true)
     const [running, setRunning] = useState(false)
@@ -181,6 +188,7 @@ export default function KronosPrediction() {
         setRunning(true)
         setError(null)
         setPredictions([])
+        setForecastDates([])
         try {
             const selectedFrequency = FREQUENCIES.find(item => item.value === config.frequency) ?? FREQUENCIES[0]
             const end = new Date()
@@ -190,17 +198,25 @@ export default function KronosPrediction() {
             const source = response.candles.filter(candle => [candle.open, candle.high, candle.low, candle.close].every(value => Number.isFinite(Number(value))))
             if (source.length < 10) throw new Error('可用 K 线不足 10 根，无法进行 Kronos 预测')
             const history = source.slice(-Math.min(config.lookback, 512))
-            const result = await api.predictKronos({
-                klines: history.map(toKronosKline),
-                pred_len: config.predLen,
-                temperature: config.temperature,
-                top_p: config.topP,
-                sample_count: config.sampleCount,
-                freq: config.frequency,
-            })
+            const lastHistoryDate = history[history.length - 1].date
+            const [result, dailyForecastDates] = await Promise.all([
+                api.predictKronos({
+                    klines: history.map(toKronosKline),
+                    pred_len: config.predLen,
+                    temperature: config.temperature,
+                    top_p: config.topP,
+                    sample_count: config.sampleCount,
+                    freq: config.frequency,
+                }),
+                config.frequency === 'D'
+                    ? api.getTradingDates(lastHistoryDate.slice(0, 10), config.predLen)
+                    : Promise.resolve([]),
+            ])
             if (!result.success || !result.predictions?.length) throw new Error(result.error || 'Kronos 未返回预测结果')
+            if (config.frequency === 'D' && dailyForecastDates.length < result.predictions.length) throw new Error('交易日历未返回完整预测日期')
             setCandles(history)
             setPredictions(result.predictions)
+            setForecastDates(dailyForecastDates)
             setInferenceTimeMs(result.inference_time_ms)
             setHealth(current => current ? { ...current, status: 'ready' } : current)
             setLastRunAt(new Date().toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
@@ -216,15 +232,16 @@ export default function KronosPrediction() {
         if (!predictions.length || !candles.length) return history
         const lastDate = candles[candles.length - 1].date
         const forecast = predictions.map((prediction, index) => ({
-            date: nextDate(lastDate, config.frequency, index + 1),
+            date: config.frequency === 'D' ? forecastDates[index] : nextDate(lastDate, config.frequency, index + 1),
             forecast: Number(prediction.close),
-        }))
+        })).filter(point => Boolean(point.date))
+        const latestClose = Number(candles[candles.length - 1].close)
         return [
-            ...history,
-            { date: lastDate, actual: Number(candles[candles.length - 1].close), forecast: Number(predictions[0].close) },
-            ...forecast.slice(1),
+            ...history.slice(0, -1),
+            { date: lastDate, actual: latestClose, forecast: latestClose },
+            ...forecast,
         ]
-    }, [candles, config.frequency, predictions])
+    }, [candles, config.frequency, forecastDates, predictions])
 
     const latestClose = candles[candles.length - 1]?.close
     const finalForecast = predictions[predictions.length - 1]?.close
@@ -278,7 +295,7 @@ export default function KronosPrediction() {
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.22)" vertical={false} />
                                     <XAxis dataKey="date" tickFormatter={formatDate} minTickGap={42} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                                     <YAxis domain={['auto', 'auto']} tickFormatter={(value: number) => formatNumber(value, 0)} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={48} />
-                                    <Tooltip labelFormatter={(label) => new Date(String(label)).toLocaleString('zh-CN')} formatter={(value: number, name: string) => [formatNumber(value), name === 'actual' ? '历史收盘' : 'Kronos 预测']} contentStyle={{ borderRadius: 10, border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#334155', fontSize: 12 }} labelStyle={{ color: '#1e293b', fontWeight: 600, marginBottom: 4 }} itemStyle={{ color: '#475569' }} />
+                                    <Tooltip labelFormatter={(label) => formatTooltipDate(String(label), config.frequency)} formatter={(value: number, name: string) => [formatNumber(value), name === 'actual' ? '历史收盘' : 'Kronos 预测']} contentStyle={{ borderRadius: 10, border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#334155', fontSize: 12 }} labelStyle={{ color: '#1e293b', fontWeight: 600, marginBottom: 4 }} itemStyle={{ color: '#475569' }} />
                                     <Line type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={2} dot={false} connectNulls />
                                     <Line type="monotone" dataKey="forecast" stroke="#06b6d4" strokeWidth={2.5} strokeDasharray="6 4" dot={false} connectNulls />
                                 </LineChart>

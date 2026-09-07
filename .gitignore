@@ -234,6 +234,7 @@ __marimo__/
 eval_results/
 reports/
 results/
+data/miniqmt_sync_state.json
 
 # Private dirs (not open-source for now)
 deploy/
