@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import type { PortfolioPositionInput, TrackingBoardItem, TrackingBoardResponse } from '@/types'
+import SecurityLabel from '@/components/SecurityLabel'
 
 const CLAMP_TWO_LINES_STYLE: CSSProperties = {
     display: '-webkit-box',
@@ -438,9 +439,8 @@ function SimpleTrackingRow({ item }: { item: TrackingBoardItem }) {
     return (
         <div className="grid grid-cols-[1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 px-5 py-5 last:border-b-0 dark:border-slate-700">
             <div className="min-w-0">
-                <div className="truncate text-[18px] font-semibold text-slate-900 dark:text-slate-100">{item.name}</div>
+                <SecurityLabel symbol={item.symbol} name={item.name} nameClassName="text-[18px] font-semibold" />
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
-                    <span>{item.symbol}</span>
                     <span>成本 {formatPlainPrice(item.average_cost)}</span>
                     <span>持仓 {formatShares(item.current_position)}</span>
                 </div>
@@ -682,10 +682,7 @@ function DetailedTrackingRow({
                         <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">
                             <TrendingUp className="h-4 w-4" />
                         </div>
-                        <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{item.name}</p>
-                            <p className="text-xs text-slate-400">{item.symbol}</p>
-                        </div>
+                        <SecurityLabel symbol={item.symbol} name={item.name} nameClassName="text-sm font-semibold" />
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400">
                         <MetricPill label="持仓" value={formatShares(item.current_position)} />

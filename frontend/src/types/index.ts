@@ -300,6 +300,7 @@ export interface KlineCandle {
 
 export interface KlineResponse {
     symbol: string
+    name?: string | null
     start_date: string
     end_date: string
     candles: KlineCandle[]
@@ -353,6 +354,7 @@ export interface MiniQMTSyncState {
     data_types: MiniQMTDataTypeStat[]
     selected_symbol?: {
         symbol: string
+        name?: string | null
         complete: boolean
         types: MiniQMTSymbolDataType[]
     }

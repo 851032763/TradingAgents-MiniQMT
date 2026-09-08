@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AnalysisReport } from '@/types'
 import { sanitizeReportMarkdown } from '@/utils/reportText'
+import SecurityLabel from '@/components/SecurityLabel'
 
 interface DecisionCardProps {
     symbol: string
@@ -31,7 +32,7 @@ const decisionConfig: Record<string, { label: string; color: string; icon: typeo
 
 export default function DecisionCard({
     symbol,
-    name = symbol,
+    name,
     decision: propDecision,
     direction,
     confidence,
@@ -77,8 +78,7 @@ export default function DecisionCard({
                         <TrendingUp className="w-5 h-5 text-white" />
                     </div>
                     <div>
-                        <h3 className="font-semibold text-slate-900 dark:text-slate-100">{name}</h3>
-                        <p className="text-sm text-slate-500">{symbol}</p>
+                        <SecurityLabel symbol={symbol} name={name} nameClassName="font-semibold" />
                         {direction && (
                             <p className="text-xs text-slate-400 mt-0.5">方向：{direction}</p>
                         )}

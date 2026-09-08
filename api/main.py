@@ -389,6 +389,7 @@ def _serialize_datetime_utc(value: Optional[datetime]) -> Optional[str]:
 
 _cn_stock_map_loaded_at: float = 0  # timestamp of last load
 _STOCK_MAP_TTL = 7 * 86400  # 7 days
+_STOCK_MAP_FAILURE_RETRY = 300  # Retry a failed remote refresh after 5 minutes.
 
 
 def _load_cn_stock_map() -> Dict[str, str]:
@@ -444,6 +445,10 @@ def _load_cn_stock_map() -> Dict[str, str]:
             if _cn_stock_map is None:
                 _cn_stock_map = {}
                 _cn_stock_reverse_map = {}
+                # Do not treat a transient network failure as a successful
+                # seven-day refresh. Keep serving code fallbacks briefly, then
+                # allow the next request to recover names automatically.
+                _cn_stock_map_loaded_at = now - _STOCK_MAP_TTL + _STOCK_MAP_FAILURE_RETRY
     return _cn_stock_map
 
 
@@ -677,6 +682,7 @@ class ChatCompletionRequest(UserContextInput):
 
 class KlineResponse(BaseModel):
     symbol: str
+    name: Optional[str] = None
     start_date: str
     end_date: str
     candles: List[Dict[str, Any]]
@@ -2517,6 +2523,45 @@ CN_INDEX_SYMBOL_MAP = {
     "899050.BJ": "bj899050",
 }
 
+CN_INDEX_DISPLAY_NAMES = {
+    "000001.SH": "上证指数",
+    "399001.SZ": "深证成指",
+    "399006.SZ": "创业板指",
+    "000300.SH": "沪深300",
+    "000688.SH": "科创50",
+    "000905.SH": "中证500",
+    "000852.SH": "中证1000",
+    "899050.BJ": "北证50",
+}
+_security_name_cache: Dict[str, str] = {}
+
+
+def _security_display_name(symbol: str) -> str:
+    normalized = symbol.upper()
+    if normalized in CN_INDEX_DISPLAY_NAMES:
+        return CN_INDEX_DISPLAY_NAMES[normalized]
+    if normalized in _security_name_cache:
+        return _security_name_cache[normalized]
+
+    name = _get_reverse_stock_map().get(normalized)
+    if not name:
+        try:
+            from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+
+            detail = CnMiniQMTProvider._xtdata().get_instrument_detail(normalized) or {}
+            name = str(
+                detail.get("InstrumentName")
+                or detail.get("instrument_name")
+                or detail.get("name")
+                or ""
+            ).strip()
+        except Exception as exc:
+            _log(f"[security-name] MiniQMT lookup unavailable for {normalized}: {type(exc).__name__}: {exc}")
+
+    resolved = name or normalized
+    _security_name_cache[normalized] = resolved
+    return resolved
+
 
 def _is_cn_index_symbol(symbol: str) -> bool:
     return symbol.upper() in CN_INDEX_SYMBOL_MAP
@@ -2827,6 +2872,7 @@ def get_kline(
         )
         return KlineResponse(
             symbol=normalized_symbol,
+            name=_security_display_name(normalized_symbol),
             start_date=start,
             end_date=end,
             candles=candles,
@@ -2860,6 +2906,7 @@ def get_kline(
         raise HTTPException(status_code=404, detail="no kline data")
     return KlineResponse(
         symbol=symbol,
+        name=_security_display_name(symbol),
         start_date=start,
         end_date=end,
         candles=candles,
@@ -3684,7 +3731,7 @@ def list_reports(
     )
     code_to_name = _get_reverse_stock_map_cached_only()
     for r in reports:
-        r.name = code_to_name.get(r.symbol, r.symbol)
+        r.name = code_to_name.get(r.symbol) or _security_display_name(r.symbol)
         _attach_job_runtime_state(r, str(getattr(r, "id", "")))
     return {"total": total, "reports": reports}
 
@@ -3716,7 +3763,7 @@ def get_report_endpoint(
     if str(report.status or "") in report_service.ACTIVE_REPORT_STATUSES and not _get_job(report_id):
         report = report_service.finalize_orphan_report(db, report)
     code_to_name = _get_reverse_stock_map()
-    report.name = code_to_name.get(report.symbol, report.symbol)
+    report.name = code_to_name.get(report.symbol) or _security_display_name(report.symbol)
     _attach_job_runtime_state(report, report_id)
     return report
 
@@ -4300,7 +4347,11 @@ def get_miniqmt_sync_status(
 ):
     """Return MiniQMT local-cache progress and an optional symbol inspection."""
     try:
-        return get_miniqmt_sync_service().get_status(symbol)
+        status = get_miniqmt_sync_service().get_status(symbol)
+        selected = status.get("selected_symbol")
+        if isinstance(selected, dict) and selected.get("symbol"):
+            selected["name"] = _security_display_name(str(selected["symbol"]))
+        return status
     except (ValueError, NotImplementedError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -4393,7 +4444,7 @@ def _build_manual_imported_user_context(db: Session, user_id: str, symbol: str) 
 def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List[dict]:
     for item in items:
         symbol = str(item.get("symbol") or "").upper()
-        item["name"] = code_to_name.get(symbol, symbol or item.get("name") or "")
+        item["name"] = code_to_name.get(symbol) or _security_display_name(symbol) if symbol else item.get("name") or ""
     return items
 
 
@@ -4598,7 +4649,7 @@ def get_portfolio_overview(
         symbols=[item["symbol"] for item in watchlist_items],
     )
     for report in latest_reports:
-        report.name = code_to_name.get(report.symbol, report.symbol)
+        report.name = code_to_name.get(report.symbol) or _security_display_name(report.symbol)
 
     portfolio_import = portfolio_import_service.get_import_state(db, current_user.id)
 

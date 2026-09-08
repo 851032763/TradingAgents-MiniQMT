@@ -24,6 +24,7 @@ import {
 } from 'recharts'
 
 import { api } from '@/services/api'
+import SecurityLabel from '@/components/SecurityLabel'
 import type {
     KlineCandle,
     KronosHealth,
@@ -121,6 +122,7 @@ export default function KronosPrediction() {
     const [health, setHealth] = useState<KronosHealth | null>(null)
     const [modelInfo, setModelInfo] = useState<KronosModelInfo | null>(null)
     const [candles, setCandles] = useState<KlineCandle[]>([])
+    const [securityName, setSecurityName] = useState<string | null>(null)
     const [predictions, setPredictions] = useState<KronosPredictionPoint[]>([])
     const [forecastDates, setForecastDates] = useState<string[]>([])
     const [inferenceTimeMs, setInferenceTimeMs] = useState<number | null>(null)
@@ -195,6 +197,7 @@ export default function KronosPrediction() {
             const days = config.frequency === 'D' ? Math.max(config.lookback * 2, 180) : config.frequency === 'H' ? 45 : 10
             const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
             const response = await api.getKline(symbol, start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), selectedFrequency.period)
+            setSecurityName(response.name || symbol)
             const source = response.candles.filter(candle => [candle.open, candle.high, candle.low, candle.close].every(value => Number.isFinite(Number(value))))
             if (source.length < 10) throw new Error('可用 K 线不足 10 根，无法进行 Kronos 预测')
             const history = source.slice(-Math.min(config.lookback, 512))
@@ -282,8 +285,8 @@ export default function KronosPrediction() {
                         <div className="flex items-center gap-2">
                             <BarChart3 className="h-5 w-5 text-blue-500" />
                             <div>
-                                <h2 className="font-semibold text-slate-900 dark:text-slate-100">收盘价路径</h2>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">{candles.length ? `${config.symbol} · ${candles.length} 根历史 · 未来 ${predictions.length || config.predLen} 期` : '运行预测后显示历史与预测路径'}</p>
+                                {candles.length ? <SecurityLabel symbol={config.symbol} name={securityName} nameClassName="font-semibold" /> : <h2 className="font-semibold text-slate-900 dark:text-slate-100">收盘价路径</h2>}
+                                <p className="text-xs text-slate-500 dark:text-slate-400">{candles.length ? `收盘价路径 · ${candles.length} 根历史 · 未来 ${predictions.length || config.predLen} 期` : '运行预测后显示历史与预测路径'}</p>
                             </div>
                         </div>
                         {lastRunAt && <span className="text-xs text-slate-400 dark:text-slate-500">最近运行 {lastRunAt}</span>}
@@ -320,7 +323,7 @@ export default function KronosPrediction() {
                     <div className="mb-5 flex items-center gap-2"><SlidersHorizontal className="h-5 w-5 text-blue-500" /><h2 className="font-semibold text-slate-900 dark:text-slate-100">预测配置</h2></div>
                     <div className="space-y-5">
                         <label className="block"><span className="mb-2 block text-xs font-semibold text-slate-500 dark:text-slate-400">股票代码</span><input value={config.symbol} onChange={event => updateConfig('symbol', event.target.value.toUpperCase())} onKeyDown={event => { if (event.key === 'Enter') void runPrediction() }} placeholder="例如 000001.SZ" className="input w-full font-mono" /></label>
-                        <div><span className="mb-2 block text-xs font-semibold text-slate-500 dark:text-slate-400">常用标的</span><div className="flex flex-wrap gap-2">{PRESET_SYMBOLS.map(item => <button key={item.symbol} type="button" onClick={() => updateConfig('symbol', item.symbol)} className={`rounded-md border px-2.5 py-1.5 text-xs transition-colors ${config.symbol === item.symbol ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300' : 'border-slate-200 text-slate-500 hover:border-blue-300 dark:border-slate-700 dark:text-slate-400'}`}>{item.label}</button>)}</div></div>
+                        <div><span className="mb-2 block text-xs font-semibold text-slate-500 dark:text-slate-400">常用标的</span><div className="flex flex-wrap gap-2">{PRESET_SYMBOLS.map(item => <button key={item.symbol} type="button" onClick={() => { updateConfig('symbol', item.symbol); setSecurityName(item.label) }} className={`rounded-md border px-2.5 py-1.5 text-left transition-colors ${config.symbol === item.symbol ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300' : 'border-slate-200 text-slate-500 hover:border-blue-300 dark:border-slate-700 dark:text-slate-400'}`}><span className="block text-xs font-medium">{item.label}</span><span className="block font-mono text-[10px] opacity-75">{item.symbol}</span></button>)}</div></div>
                         <div><span className="mb-2 block text-xs font-semibold text-slate-500 dark:text-slate-400">数据频率</span><div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{FREQUENCIES.map(item => <button key={item.value} type="button" onClick={() => updateConfig('frequency', item.value)} className={`rounded-md px-2 py-2 text-xs font-medium transition-colors ${config.frequency === item.value ? 'bg-white text-blue-600 shadow-sm dark:bg-slate-700 dark:text-blue-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}>{item.label}</button>)}</div></div>
                         <RangeField label="历史窗口" value={config.lookback} min={30} max={512} step={10} suffix="根" onChange={value => updateConfig('lookback', value)} />
                         <RangeField label="预测长度" value={config.predLen} min={1} max={200} step={1} suffix="期" onChange={value => updateConfig('predLen', value)} />

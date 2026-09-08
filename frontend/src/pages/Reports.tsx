@@ -10,6 +10,7 @@ import RiskRadar from '@/components/RiskRadar'
 import KeyMetrics from '@/components/KeyMetrics'
 import { useAuthStore } from '@/stores/authStore'
 import { advanceProgress, getReportRunProgress } from '@/utils/progressFeedback'
+import SecurityLabel from '@/components/SecurityLabel'
 
 type ProgressState = {
     status: 'idle' | 'loading' | 'success' | 'error'
@@ -440,10 +441,8 @@ export default function Reports() {
                         返回列表
                     </button>
                     <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                        {selectedReport.name || selectedReport.symbol} 分析报告
-                        {selectedReport.name && selectedReport.name !== selectedReport.symbol && (
-                            <span className="ml-2 text-base font-normal text-slate-400">{selectedReport.symbol}</span>
-                        )}
+                        <SecurityLabel symbol={selectedReport.symbol} name={selectedReport.name} nameClassName="text-xl font-semibold" />
+                        <span className="text-xl">分析报告</span>
                     </h1>
                     <button
                         onClick={() => exportReport(selectedReport)}
@@ -465,7 +464,7 @@ export default function Reports() {
                     <div className="card">
                         <div className="flex items-center gap-2 mb-3">
                             <History className="w-4 h-4 text-slate-400" />
-                            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{selectedReport.name || selectedReport.symbol} 历史决策</h3>
+                            <div className="flex items-center gap-2"><SecurityLabel symbol={selectedReport.symbol} name={selectedReport.name} nameClassName="text-sm font-semibold" /><h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">历史决策</h3></div>
                         </div>
                         <div className="flex items-center gap-2 overflow-x-auto pb-1">
                             {symbolHistory.slice().reverse().map(r => {
@@ -604,12 +603,7 @@ export default function Reports() {
                                                     <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-500/10 flex items-center justify-center">
                                                         <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                                                     </div>
-                                                    <div>
-                                                        <p className="font-medium text-slate-900 dark:text-slate-100">{report.name || report.symbol}</p>
-                                                        {report.name && report.name !== report.symbol && (
-                                                            <p className="text-xs text-slate-400 dark:text-slate-500">{report.symbol}</p>
-                                                        )}
-                                                    </div>
+                                                    <SecurityLabel symbol={report.symbol} name={report.name} />
                                                 </div>
                                             </td>
                                             <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{report.trade_date}</td>

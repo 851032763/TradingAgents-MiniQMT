@@ -3,8 +3,13 @@ import { BusinessDay, CandlestickData, CandlestickSeries, ColorType, IChartApi, 
 import { Activity, CandlestickChart, Radio, WifiOff } from 'lucide-react'
 import { api } from '@/services/api'
 import type { KlineCandle, KlineResponse } from '@/types'
+import SecurityLabel, { getSecurityName } from '@/components/SecurityLabel'
 
-interface KlinePanelProps { symbol: string; onSymbolChange?: (symbol: string) => void }
+interface KlinePanelProps {
+    symbol: string
+    onSymbolChange?: (symbol: string) => void
+    onSecurityResolved?: (security: { symbol: string; name: string }) => void
+}
 type Period = '1d' | '5m' | '1m'
 type ChartTime = BusinessDay | UTCTimestamp
 
@@ -37,14 +42,13 @@ function candleTime(candle: KlineCandle, period: Period): string {
     return time == null ? '' : chartKey(time)
 }
 function lastCandle(items: KlineCandle[]): KlineCandle | null { return items.length ? items[items.length - 1] : null }
-const SYMBOL_NAME_MAP: Record<string, string> = { '000001.SH': '上证指数', '399001.SZ': '深证成指', '399006.SZ': '创业板指', '000300.SH': '沪深300', '000905.SH': '中证500', '000852.SH': '中证1000', '300750.SZ': '宁德时代', '600406.SH': '国电南瑞', '510300.SH': '沪深300ETF' }
-function getDisplayName(symbol: string): string { const value = symbol.toUpperCase(); return SYMBOL_NAME_MAP[value] ? `${SYMBOL_NAME_MAP[value]}（${value}）` : value }
+const FALLBACK_NAMES: Record<string, string> = { '000001.SH': '上证指数', '399001.SZ': '深证成指', '399006.SZ': '创业板指', '000300.SH': '沪深300', '000688.SH': '科创50', '000905.SH': '中证500', '000852.SH': '中证1000', '899050.BJ': '北证50' }
 function formatNumber(value?: number | null, digits = 2): string { if (value == null || !Number.isFinite(value)) return '--'; return new Intl.NumberFormat('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value) }
 function formatVolume(value?: number | null): string { if (value == null || !Number.isFinite(value)) return '--'; if (Math.abs(value) >= 1e8) return `${formatNumber(value / 1e8, 2)}亿`; if (Math.abs(value) >= 1e4) return `${formatNumber(value / 1e4, 2)}万`; return formatNumber(value, 0) }
 const INDEX_PRESETS = [{ symbol: '000001.SH', label: '上证指数' }, { symbol: '399001.SZ', label: '深证成指' }, { symbol: '399006.SZ', label: '创业板指' }, { symbol: '000688.SH', label: '科创50' }, { symbol: '899050.BJ', label: '北证50' }] as const
 const PERIODS: Array<{ value: Period; label: string }> = [{ value: '1d', label: '日线' }, { value: '5m', label: '5分钟' }, { value: '1m', label: '1分钟' }]
 
-export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) {
+export default function KlinePanel({ symbol, onSymbolChange, onSecurityResolved }: KlinePanelProps) {
     const containerRef = useRef<HTMLDivElement | null>(null)
     const chartRef = useRef<IChartApi | null>(null)
     const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -58,8 +62,10 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
     const [activeCandle, setActiveCandle] = useState<KlineCandle | null>(null)
     const [minuteUnavailable, setMinuteUnavailable] = useState(false)
     const [realtimeLive, setRealtimeLive] = useState(false)
+    const [resolvedName, setResolvedName] = useState<string | null>(null)
     const range = useMemo(() => { const end = new Date(); const days = period === '1d' ? 180 : period === '5m' ? 30 : 7; return { start: toDateText(new Date(end.getTime() - days * 86400000)), end: toDateText(end) } }, [period])
 
+    useEffect(() => { setResolvedName(null) }, [symbol])
     useEffect(() => { const observer = new MutationObserver(() => setIsDark(document.documentElement.classList.contains('dark'))); observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] }); return () => observer.disconnect() }, [])
     useEffect(() => {
         if (!containerRef.current) return
@@ -76,11 +82,14 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
             setLoading(true); setError(null); setStatus(period === '1d' ? '正在加载 K 线数据…' : '本地暂无对应分钟数据，正在通过 miniQMT 下载…')
             try {
                 const response: KlineResponse = await api.getKline(symbol, range.start, range.end, period); if (cancelled) return
+                const name = getSecurityName(response.name, response.symbol)
+                setResolvedName(name)
+                onSecurityResolved?.({ symbol: response.symbol, name })
                 const next = response.candles ?? []; const data: CandlestickData<ChartTime>[] = next.flatMap((c) => { const time = toChartTime(c.date, period); const open = Number(c.open), high = Number(c.high), low = Number(c.low), close = Number(c.close); return time != null && [open, high, low, close].every(Number.isFinite) ? [{ time, open, high, low, close }] : [] })
                 candlesRef.current = next; setCandles(next); setActiveCandle(lastCandle(next)); seriesRef.current?.setData(data); chartRef.current?.timeScale().fitContent(); setMinuteUnavailable(period !== '1d' && !!response.degraded); setStatus(response.message ?? (period === '1d' ? null : response.realtime_supported ? '正在连接实时行情…' : '当前数据源仅支持分钟历史数据，暂不支持实时行情')); if (!data.length && !response.degraded) setError(period === '1d' ? '日线行情加载失败，请稍后重试' : '暂无对应周期 K 线数据')
             } catch (e) { if (cancelled) return; setError(period === '1d' ? '日线行情加载失败，请稍后重试' : (e instanceof Error ? e.message : '行情数据加载失败，请重试')); setCandles([]); candlesRef.current = []; setActiveCandle(null); seriesRef.current?.setData([]); if (period !== '1d') setMinuteUnavailable(true) } finally { if (!cancelled) setLoading(false) }
         }; load(); return () => { cancelled = true }
-    }, [range.end, range.start, symbol, period])
+    }, [range.end, range.start, symbol, period, onSecurityResolved])
     useEffect(() => {
         if (minuteUnavailable) return
         const source = new EventSource(api.getKlineStreamUrl(symbol, period))
@@ -91,7 +100,7 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
 
     const panelCandle = activeCandle ?? lastCandle(candles); const panelChange = panelCandle?.change ?? (panelCandle ? panelCandle.close - panelCandle.open : null); const panelChangePercent = panelCandle?.change_percent ?? (panelCandle && panelCandle.open !== 0 ? (panelChange! / panelCandle.open) * 100 : null); const isUp = (panelChange ?? 0) >= 0; const compactChangePercent = panelChangePercent == null ? '--' : `${panelChangePercent >= 0 ? '+' : ''}${formatNumber(panelChangePercent)}%`
     return <section className="card h-full flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between mb-3 shrink-0"><div className="min-w-0 flex items-center gap-3"><CandlestickChart className="w-5 h-5 text-cyan-500" /><div className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1"><h2 className="truncate text-lg font-semibold text-slate-900 dark:text-slate-100">{getDisplayName(symbol)} K线</h2><div className="flex items-center gap-1">{PERIODS.map(item => <button key={item.value} disabled={item.value !== '1d' && minuteUnavailable} onClick={() => setPeriod(item.value)} className={`text-xs px-2 py-1 rounded border transition-colors ${item.value === period ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-500/10' : item.value !== '1d' && minuteUnavailable ? 'border-slate-200 dark:border-slate-700 text-slate-400 opacity-50 cursor-not-allowed' : 'border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-slate-400'}`}>{item.label}</button>)}</div>{realtimeLive && <span className="inline-flex items-center gap-1 text-xs text-red-500"><Radio className="w-3 h-3" />实时</span>}<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"><span className="text-slate-500 dark:text-slate-400">{panelCandle ? (period === '1d' ? panelCandle.date.replace(/-/g, '/') : formatMinuteDate(panelCandle.date)) : '--'}</span><span className={`font-medium ${isUp ? 'text-red-500' : 'text-emerald-500'}`}>收盘 {formatNumber(panelCandle?.close)}</span><span className="text-slate-500 dark:text-slate-400">开盘 {formatNumber(panelCandle?.open)}</span><span className={`font-medium ${isUp ? 'text-red-500' : 'text-emerald-500'}`}>{compactChangePercent}</span><span className="text-slate-500 dark:text-slate-400">高/低 {formatNumber(panelCandle?.high)} / {formatNumber(panelCandle?.low)}</span><span className="text-slate-500 dark:text-slate-400">量 {formatVolume(panelCandle?.volume)}</span><span className="text-slate-500 dark:text-slate-400">换手 {panelCandle?.turnover_rate == null ? '--' : `${formatNumber(panelCandle.turnover_rate)}%`}</span></div></div></div><div className="flex items-center gap-1.5">{INDEX_PRESETS.map(item => <button key={item.symbol} onClick={() => onSymbolChange?.(item.symbol)} className={`text-xs px-2 py-1 rounded border transition-colors ${item.symbol === symbol ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:text-slate-900 hover:border-slate-400'}`}>{item.label}</button>)}</div></div>
+        <div className="flex items-center justify-between mb-3 shrink-0"><div className="min-w-0 flex items-center gap-3"><CandlestickChart className="w-5 h-5 text-cyan-500" /><div className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1"><SecurityLabel symbol={symbol} name={resolvedName ?? FALLBACK_NAMES[symbol.toUpperCase()]} nameClassName="text-lg font-semibold" /><div className="flex items-center gap-1">{PERIODS.map(item => <button key={item.value} disabled={item.value !== '1d' && minuteUnavailable} onClick={() => setPeriod(item.value)} className={`text-xs px-2 py-1 rounded border transition-colors ${item.value === period ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-500/10' : item.value !== '1d' && minuteUnavailable ? 'border-slate-200 dark:border-slate-700 text-slate-400 opacity-50 cursor-not-allowed' : 'border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-slate-400'}`}>{item.label}</button>)}</div>{realtimeLive && <span className="inline-flex items-center gap-1 text-xs text-red-500"><Radio className="w-3 h-3" />实时</span>}<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"><span className="text-slate-500 dark:text-slate-400">{panelCandle ? (period === '1d' ? panelCandle.date.replace(/-/g, '/') : formatMinuteDate(panelCandle.date)) : '--'}</span><span className={`font-medium ${isUp ? 'text-red-500' : 'text-emerald-500'}`}>收盘 {formatNumber(panelCandle?.close)}</span><span className="text-slate-500 dark:text-slate-400">开盘 {formatNumber(panelCandle?.open)}</span><span className={`font-medium ${isUp ? 'text-red-500' : 'text-emerald-500'}`}>{compactChangePercent}</span><span className="text-slate-500 dark:text-slate-400">高/低 {formatNumber(panelCandle?.high)} / {formatNumber(panelCandle?.low)}</span><span className="text-slate-500 dark:text-slate-400">量 {formatVolume(panelCandle?.volume)}</span><span className="text-slate-500 dark:text-slate-400">换手 {panelCandle?.turnover_rate == null ? '--' : `${formatNumber(panelCandle.turnover_rate)}%`}</span></div></div></div><div className="flex items-center gap-1.5">{INDEX_PRESETS.map(item => <button key={item.symbol} onClick={() => onSymbolChange?.(item.symbol)} className={`text-xs px-2 py-1 rounded border transition-colors ${item.symbol === symbol ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-500/10' : 'border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:text-slate-900 hover:border-slate-400'}`}>{item.label}</button>)}</div></div>
         <div className="relative flex-1 min-h-0 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-hidden"><div ref={containerRef} className="absolute inset-0" />{loading && <div className="absolute right-3 top-3 text-xs px-2 py-1 rounded bg-white/90 dark:bg-slate-800/90 text-slate-600 dark:text-slate-400 flex items-center gap-1"><Activity className="w-3 h-3 animate-pulse" />{status ?? '正在加载 K 线数据…'}</div>}{!loading && status && <div className="absolute left-3 top-3 max-w-[80%] text-xs px-2 py-1 rounded bg-white/90 dark:bg-slate-800/90 text-orange-500 flex items-center gap-1"><WifiOff className="w-3 h-3" />{status}</div>}{error && <div className="absolute left-3 bottom-3 text-xs px-2 py-1 rounded bg-white/90 dark:bg-slate-800/90 text-orange-500">{error}</div>}{minuteUnavailable && period !== '1d' && <button onClick={() => setPeriod('1d')} className="absolute right-3 bottom-3 text-xs px-2.5 py-1 rounded border border-blue-500 text-blue-500 bg-white/90 dark:bg-slate-800/90">切换至日线</button>}</div>
     </section>
 }

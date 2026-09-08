@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/services/api'
 import type { WatchlistItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
+import SecurityLabel from '@/components/SecurityLabel'
 
 const HORIZON_LABELS: Record<string, string> = { short: '短线', medium: '中线' }
 const WATCHLIST_BATCH_SPLIT_RE = /[,\s，、；;]+/
@@ -561,8 +562,7 @@ export default function Portfolio() {
                                             onClick={() => addToWatchlist(r.symbol)}
                                             className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors"
                                         >
-                                            <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{r.name}</span>
-                                            <span className="text-xs text-slate-400">{r.symbol}</span>
+                                            <SecurityLabel symbol={r.symbol} name={r.name} nameClassName="text-sm" />
                                             <Plus className="w-3.5 h-3.5 text-blue-500 ml-auto" />
                                         </button>
                                     ))}
@@ -594,8 +594,7 @@ export default function Portfolio() {
                                                 <TrendingUp className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                                             </div>
                                             <div className="flex-1 min-w-0">
-                                                <p className="font-medium text-slate-900 dark:text-slate-100 text-sm">{item.name}</p>
-                                                <p className="text-xs text-slate-400">{item.symbol}</p>
+                                                <SecurityLabel symbol={item.symbol} name={item.name} nameClassName="text-sm" />
                                                 {report && (
                                                     <p className="text-xs text-slate-400 mt-0.5">
                                                         最近：{report.trade_date} · {report.direction || report.decision || '—'}
@@ -762,10 +761,7 @@ export default function Portfolio() {
                                         />
 
                                         <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <p className="font-medium text-sm text-slate-900 dark:text-slate-100">{task.name}</p>
-                                                <span className="text-xs text-slate-400">{task.symbol}</span>
-                                            </div>
+                                            <SecurityLabel symbol={task.symbol} name={task.name} nameClassName="text-sm" />
                                             <div className="flex items-center gap-2 mt-1 flex-wrap">
                                                 {/* Horizon badge */}
                                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400">

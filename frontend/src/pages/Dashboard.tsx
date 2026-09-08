@@ -7,6 +7,7 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import { useAuthStore } from '@/stores/authStore'
 import type { Report, TrackingBoardResponse } from '@/types'
 import PromoBanner from '@/components/PromoBanner'
+import SecurityLabel from '@/components/SecurityLabel'
 
 export default function Dashboard() {
     const { agents, isAnalyzing } = useAnalysisStore()
@@ -170,7 +171,7 @@ export default function Dashboard() {
                                             <FileText className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                                         </div>
                                         <div>
-                                            <p className="font-medium text-slate-900 dark:text-slate-100 text-sm">{report.name || report.symbol}</p>
+                                            <SecurityLabel symbol={report.symbol} name={report.name} nameClassName="text-sm" />
                                             <p className="text-xs text-slate-400 dark:text-slate-500">{report.trade_date}</p>
                                         </div>
                                     </div>

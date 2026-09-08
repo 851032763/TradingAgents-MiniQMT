@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import AgentCollaboration from '@/components/AgentCollaboration'
 import DebateDrawer from '@/components/DebateDrawer'
@@ -48,6 +48,7 @@ export default function Analysis() {
     const [searchParams] = useSearchParams()
     const querySymbol = (searchParams.get('symbol') || '').trim().toUpperCase()
     const [activeSymbol, setActiveSymbol] = useState(() => querySymbol || useAnalysisStore.getState().currentSymbol || '000001.SH')
+    const [activeName, setActiveName] = useState<string | undefined>()
     const [activeSection, setActiveSection] = useState<string | undefined>()
     const [debateDrawer, setDebateDrawer] = useState<'research' | 'risk' | null>(null)
     const reportRef = useRef<HTMLDivElement | null>(null)
@@ -70,12 +71,16 @@ export default function Analysis() {
     const initialChatInput = querySymbol ? `分析 ${querySymbol} 今日走势` : undefined
 
     useEffect(() => {
-        if (querySymbol) setActiveSymbol(querySymbol)
+        if (querySymbol) {
+            setActiveSymbol(querySymbol)
+            setActiveName(undefined)
+        }
     }, [querySymbol])
 
     useEffect(() => {
         if (currentSymbol) {
             setActiveSymbol(currentSymbol)
+            setActiveName(undefined)
         }
     }, [currentSymbol])
 
@@ -83,6 +88,9 @@ export default function Analysis() {
     const confidence = jobConfidence ?? extractConfidence(finalDecision)
     const targetPrice = jobTargetPrice ?? extractPrice(finalDecision, 'target')
     const stopLoss = jobStopLoss ?? extractPrice(finalDecision, 'stop')
+    const handleSecurityResolved = useCallback(({ symbol, name }: { symbol: string; name: string }) => {
+        if (symbol === activeSymbol) setActiveName(name)
+    }, [activeSymbol])
 
     return (
         <div className="space-y-4">
@@ -92,6 +100,7 @@ export default function Analysis() {
                         <ChatCopilotPanel
                             onSymbolDetected={(symbol) => {
                                 setActiveSymbol(symbol)
+                                setActiveName(undefined)
                                 setCurrentSymbol(symbol)
                             }}
                             onShowReport={handleShowReport}
@@ -106,7 +115,9 @@ export default function Analysis() {
                             symbol={activeSymbol}
                             onSymbolChange={(symbol) => {
                                 setActiveSymbol(symbol)
+                                setActiveName(undefined)
                             }}
+                            onSecurityResolved={handleSecurityResolved}
                         />
                     </div>
 
@@ -115,6 +126,7 @@ export default function Analysis() {
                     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                         <DecisionCard
                             symbol={activeSymbol}
+                            name={report?.instrument_context?.security_name || activeName}
                             report={report || undefined}
                             decision={mapDecision(report?.decision)}
                             direction={report?.direction}
