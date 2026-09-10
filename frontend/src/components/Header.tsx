@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bell, BellOff, ChevronDown, LogOut, Monitor, Moon, Settings, Sun, Heart, Megaphone, Users } from 'lucide-react'
+import { Bell, BellOff, ChevronDown, LogOut, Monitor, Moon, Settings, Sun, Heart } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
-import type { Announcement } from '@/types'
 import GithubIcon from './GithubIcon'
 
 type ThemeMode = 'system' | 'light' | 'dark'
@@ -13,26 +11,13 @@ function getInitials(email?: string | null): string {
     return email.slice(0, 2).toUpperCase()
 }
 
-function formatAnnouncementTime(value?: string): string {
-    if (!value) return ''
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) return value
-    return parsed.toLocaleDateString('zh-CN', {
-        month: 'numeric',
-        day: 'numeric',
-    })
-}
-
 export default function Header() {
     const navigate = useNavigate()
     const { user, logout } = useAuthStore()
     const [themeMode, setThemeMode] = useState<ThemeMode>('system')
     const [notifPermission, setNotifPermission] = useState<NotificationPermission>('default')
     const [menuOpen, setMenuOpen] = useState(false)
-    const [announcementOpen, setAnnouncementOpen] = useState(false)
-    const [announcement, setAnnouncement] = useState<Announcement | null>(null)
     const menuRef = useRef<HTMLDivElement | null>(null)
-    const announceRef = useRef<HTMLDivElement | null>(null)
 
     useEffect(() => {
         const saved = (localStorage.getItem('ta-theme') || 'system') as ThemeMode
@@ -43,27 +28,9 @@ export default function Header() {
     }, [])
 
     useEffect(() => {
-        if (!user) return
-        let cancelled = false
-        api.getLatestAnnouncement()
-            .then((data) => {
-                if (!cancelled) setAnnouncement(data)
-            })
-            .catch(() => {
-                if (!cancelled) setAnnouncement(null)
-            })
-        return () => {
-            cancelled = true
-        }
-    }, [user])
-
-    useEffect(() => {
         const onClick = (event: MouseEvent) => {
             if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
                 setMenuOpen(false)
-            }
-            if (announceRef.current && !announceRef.current.contains(event.target as Node)) {
-                setAnnouncementOpen(false)
             }
         }
         document.addEventListener('mousedown', onClick)
@@ -98,21 +65,6 @@ export default function Header() {
     const themeLabel = themeMode === 'system' ? '跟随系统' : themeMode === 'light' ? '浅色' : '深色'
     const ThemeIcon = themeMode === 'system' ? Monitor : themeMode === 'light' ? Sun : Moon
     const accountTone = useMemo(() => getInitials(user?.email), [user?.email])
-    const announcementStorageKey = announcement ? `ta-announcement-read:${announcement.id}` : null
-    const hasUnreadAnnouncement = Boolean(
-        announcement &&
-        announcementStorageKey &&
-        localStorage.getItem(announcementStorageKey) !== '1'
-    )
-
-    const handleAnnouncementToggle = () => {
-        const next = !announcementOpen
-        setAnnouncementOpen(next)
-        if (next && announcementStorageKey) {
-            localStorage.setItem(announcementStorageKey, '1')
-        }
-    }
-
     return (
         <header className="h-16 sticky top-0 z-40 border-b border-slate-200/80 dark:border-slate-800 bg-white/88 dark:bg-slate-950/78 backdrop-blur-xl">
             <div className="h-full px-6 flex items-center justify-between">
@@ -128,99 +80,23 @@ export default function Header() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                    {announcement && (
-                        <div className="relative" ref={announceRef}>
-                            <button
-                                onClick={handleAnnouncementToggle}
-                                className="group relative flex items-center gap-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900/90 transition-all"
-                                title={announcement.title}
-                            >
-                                <Megaphone className="w-4 h-4 text-slate-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400" />
-                                <span className="hidden sm:inline text-[13px] font-medium text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white">
-                                    {announcement.tag || '公告'}
-                                </span>
-                                {hasUnreadAnnouncement && (
-                                    <span className="absolute right-2 top-1.5 w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.6)]" />
-                                )}
-                            </button>
-
-                            {announcementOpen && (
-                                <div className="absolute right-0 top-full mt-3 w-[360px] p-4 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shadow-[0_24px_80px_rgba(15,23,42,0.18)] z-50">
-                                    <div className="flex items-start justify-between gap-3 mb-3">
-                                        <div>
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
-                                                    {announcement.tag || '公告'}
-                                                </span>
-                                                <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                                                    {formatAnnouncementTime(announcement.published_at)}
-                                                </span>
-                                            </div>
-                                            <div className="mt-2 text-sm font-bold text-slate-900 dark:text-slate-100">
-                                                {announcement.title}
-                                            </div>
-                                            {announcement.summary && (
-                                                <div className="mt-1 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
-                                                    {announcement.summary}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-3">
-                                        {announcement.items.map((item) => (
-                                            <div key={item.title} className="group">
-                                                <div className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                                                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500 group-hover:scale-125 transition-transform" />
-                                                    {item.title}
-                                                </div>
-                                                <div className="mt-0.5 pl-3 text-[12px] text-slate-500 dark:text-slate-500 leading-relaxed">
-                                                    {item.detail}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {announcement.cta_label && announcement.cta_path && (
-                                        <button
-                                            onClick={() => {
-                                                setAnnouncementOpen(false)
-                                                navigate(announcement.cta_path!)
-                                            }}
-                                            className="mt-4 w-full py-2 rounded-xl bg-slate-50 dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-blue-600 transition-colors"
-                                        >
-                                            {announcement.cta_label}
-                                        </button>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    )}
                     <Link
                         to="/sponsor"
-                        className="group flex items-center gap-2 rounded-2xl border border-pink-200 dark:border-pink-900 bg-white dark:bg-slate-900 px-3 py-1.5 hover:border-pink-300 dark:hover:border-pink-700 hover:bg-pink-50 dark:hover:bg-pink-950/30 transition-all mr-1"
+                        className="group mr-1 flex items-center gap-2 rounded-2xl border border-pink-200 bg-white px-3 py-1.5 transition-all hover:border-pink-300 hover:bg-pink-50 dark:border-pink-900 dark:bg-slate-900 dark:hover:border-pink-700 dark:hover:bg-pink-950/30"
                         title="赞助支持"
                     >
-                        <Heart className="w-4 h-4 text-pink-500 dark:text-pink-400 group-hover:text-pink-600 dark:group-hover:text-pink-300" />
-                        <span className="text-[13px] font-medium text-pink-600 dark:text-pink-400 group-hover:text-pink-700 dark:group-hover:text-pink-300 hidden sm:inline">赞助</span>
-                    </Link>
-                    <Link
-                        to="/thanks"
-                        className="group flex items-center gap-2 rounded-2xl border border-amber-200 dark:border-amber-900 bg-white dark:bg-slate-900 px-3 py-1.5 hover:border-amber-300 dark:hover:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition-all mr-1"
-                        title="致谢名单"
-                    >
-                        <Users className="w-4 h-4 text-amber-500 dark:text-amber-400 group-hover:text-amber-600 dark:group-hover:text-amber-300" />
-                        <span className="text-[13px] font-medium text-amber-600 dark:text-amber-400 group-hover:text-amber-700 dark:group-hover:text-amber-300 hidden sm:inline">致谢</span>
+                        <Heart className="h-4 w-4 text-pink-500 group-hover:text-pink-600 dark:text-pink-400 dark:group-hover:text-pink-300" />
+                        <span className="hidden text-[13px] font-medium text-pink-600 group-hover:text-pink-700 sm:inline dark:text-pink-400 dark:group-hover:text-pink-300">赞助</span>
                     </Link>
                     <a
                         href="https://github.com/KylinMountain/TradingAgents-AShare"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="group flex items-center gap-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900/90 transition-all mr-1"
+                        className="group mr-1 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-1.5 transition-all hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700 dark:hover:bg-slate-900/90"
                         title="Star us on GitHub"
                     >
-                        <GithubIcon className="w-4 h-4 text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white" />
-                        <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white hidden sm:inline">Star</span>
+                        <GithubIcon className="h-4 w-4 text-slate-700 group-hover:text-slate-900 dark:text-slate-300 dark:group-hover:text-white" />
+                        <span className="hidden text-[13px] font-medium text-slate-700 group-hover:text-slate-900 sm:inline dark:text-slate-300 dark:group-hover:text-white">Star</span>
                     </a>
                     {user && (
                         <div className="relative" ref={menuRef}>
