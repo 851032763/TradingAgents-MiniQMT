@@ -5,6 +5,7 @@ import {
     ChevronUp,
     ImagePlus,
     Loader2,
+    Plus,
     RefreshCw,
     Save,
     ShieldAlert,
@@ -49,14 +50,37 @@ export default function TrackingBoardPanel() {
     const [showImportSection, setShowImportSection] = useState(false)
     const [positionText, setPositionText] = useState('')
     const [importSaving, setImportSaving] = useState(false)
+    const [manualSaving, setManualSaving] = useState(false)
     const [importClearing, setImportClearing] = useState(false)
+    const [importDeleting, setImportDeleting] = useState(false)
     const [importFeedback, setImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
     const [vlmParsing, setVlmParsing] = useState(false)
+    const [manualQuote, setManualQuote] = useState<{ price: number | null; loading: boolean; error: string | null }>({
+        price: null,
+        loading: false,
+        error: null,
+    })
+    const [manualPosition, setManualPosition] = useState({
+        symbol: '',
+        name: '',
+        currentPosition: '',
+        averageCost: '',
+    })
+    const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
     const fileInputRef = useRef<HTMLInputElement>(null)
     const navigate = useNavigate()
 
-    const trackingItems = trackingBoard?.items || []
+    const trackingItems = useMemo(() => trackingBoard?.items || [], [trackingBoard?.items])
+    const selectedSymbolSet = useMemo(() => new Set(selectedSymbols), [selectedSymbols])
+    const selectedCount = trackingItems.filter(item => selectedSymbolSet.has(item.symbol)).length
+    const allItemsSelected = trackingItems.length > 0 && selectedCount === trackingItems.length
     const trackingRefreshSeconds = trackingBoard?.refresh_interval_seconds || 20
+    const calculatedMarketValue = useMemo(() => {
+        const currentPosition = Number(manualPosition.currentPosition)
+        if (!manualPosition.currentPosition.trim() || manualQuote.price == null) return null
+        if (!Number.isFinite(currentPosition)) return null
+        return Math.round(currentPosition * manualQuote.price * 100) / 100
+    }, [manualPosition.currentPosition, manualQuote.price])
     const liveMarketValueTotal = trackingItems.reduce(
         (sum, item) => sum + (item.live_market_value ?? item.market_value ?? 0),
         0,
@@ -79,6 +103,44 @@ export default function TrackingBoardPanel() {
     }, [viewMode])
 
     useEffect(() => {
+        const symbol = manualPosition.symbol.trim().toUpperCase()
+        const isCompleteSymbol = /^\d{6}(?:\.(?:SZ|SH|BJ))?$/.test(symbol)
+        if (!isCompleteSymbol) return
+
+        let cancelled = false
+        const timerId = window.setTimeout(async () => {
+            setManualQuote({ price: null, loading: true, error: null })
+            const [searchResult, quoteResult] = await Promise.allSettled([
+                api.searchStocks(symbol),
+                api.getRealtimeQuote(symbol),
+            ])
+            if (cancelled) return
+            const code = symbol.split('.')[0]
+            const match = searchResult.status === 'fulfilled'
+                ? searchResult.value.results.find(item => item.symbol.split('.')[0] === code)
+                : undefined
+            const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : null
+            setManualPosition(current => current.symbol.trim().toUpperCase() === symbol
+                ? { ...current, name: quote?.name || match?.name || '' }
+                : current)
+            setManualQuote(quote
+                ? { price: quote.price, loading: false, error: null }
+                : {
+                    price: null,
+                    loading: false,
+                    error: quoteResult.status === 'rejected' && quoteResult.reason instanceof Error
+                        ? quoteResult.reason.message
+                        : '暂未获取到实时价格',
+                })
+        }, 250)
+
+        return () => {
+            cancelled = true
+            window.clearTimeout(timerId)
+        }
+    }, [manualPosition.symbol])
+
+    useEffect(() => {
         if (!user?.id) return
         let cancelled = false
 
@@ -93,6 +155,9 @@ export default function TrackingBoardPanel() {
                 const response = await api.getDashboardTrackingBoard()
                 if (cancelled) return
                 setTrackingBoard(response)
+                if (!silent && response.items.length === 0) {
+                    setShowImportSection(true)
+                }
                 setTrackingError(null)
             } catch (error) {
                 if (cancelled) return
@@ -156,8 +221,9 @@ export default function TrackingBoardPanel() {
         setImportFeedback(null)
         try {
             await api.syncPortfolioImport({ positions, auto_apply_scheduled: true })
-            setImportFeedback({ tone: 'success', message: `已保存 ${positions.length} 只持仓` })
+            setImportFeedback({ tone: 'success', message: `已新增 / 更新 ${positions.length} 只持仓，其他已有持仓保持不变` })
             setPositionText('')
+            setSelectedSymbols([])
             setShowImportSection(false)
             await refreshBoard()
         } catch (e) {
@@ -167,6 +233,59 @@ export default function TrackingBoardPanel() {
         }
     }, [positionText, parsePositionLines, refreshBoard])
 
+    const handleAddSinglePosition = useCallback(async () => {
+        const symbol = manualPosition.symbol.trim()
+        if (!/^\d{6}(?:\.(?:SZ|SH|BJ))?$/i.test(symbol)) {
+            setImportFeedback({ tone: 'error', message: '请输入有效的 6 位股票代码' })
+            return
+        }
+
+        const parseRequiredNumber = (value: string, label: string) => {
+            if (!value.trim()) {
+                throw new Error(`${label}为必填项`)
+            }
+            const parsed = Number(value)
+            if (!Number.isFinite(parsed)) {
+                throw new Error(`${label}必须是数字`)
+            }
+            return parsed
+        }
+
+        let position: PortfolioPositionInput
+        try {
+            const currentPosition = parseRequiredNumber(manualPosition.currentPosition, '持仓数')
+            const averageCost = parseRequiredNumber(manualPosition.averageCost, '成本价')
+            if (manualQuote.price == null) {
+                throw new Error('尚未获取到实时价格，暂不能计算市值')
+            }
+            position = {
+                symbol,
+                name: manualPosition.name.trim() || undefined,
+                current_position: currentPosition,
+                average_cost: averageCost,
+                market_value: Math.round(currentPosition * manualQuote.price * 100) / 100,
+            }
+        } catch (error) {
+            setImportFeedback({ tone: 'error', message: error instanceof Error ? error.message : '请输入正确的持仓数据' })
+            return
+        }
+
+        setManualSaving(true)
+        setImportFeedback(null)
+        try {
+            await api.syncPortfolioImport({ positions: [position], auto_apply_scheduled: true })
+            setImportFeedback({ tone: 'success', message: `已新增 / 更新 ${symbol}，其他已有持仓保持不变` })
+            setManualPosition({ symbol: '', name: '', currentPosition: '', averageCost: '' })
+            setManualQuote({ price: null, loading: false, error: null })
+            setSelectedSymbols([])
+            await refreshBoard()
+        } catch (error) {
+            setImportFeedback({ tone: 'error', message: error instanceof Error ? error.message : '单条新增失败' })
+        } finally {
+            setManualSaving(false)
+        }
+    }, [manualPosition, manualQuote.price, refreshBoard])
+
     const handleClearPositions = useCallback(async () => {
         if (!confirm('确定清空所有已导入的持仓吗？')) return
         setImportClearing(true)
@@ -175,6 +294,7 @@ export default function TrackingBoardPanel() {
             await api.clearPortfolioImport()
             setImportFeedback({ tone: 'success', message: '已清空持仓' })
             setPositionText('')
+            setSelectedSymbols([])
             await refreshBoard()
         } catch (e) {
             setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '清空失败' })
@@ -182,6 +302,37 @@ export default function TrackingBoardPanel() {
             setImportClearing(false)
         }
     }, [refreshBoard])
+
+    const toggleSymbol = useCallback((symbol: string) => {
+        setSelectedSymbols(current => current.includes(symbol)
+            ? current.filter(item => item !== symbol)
+            : [...current, symbol])
+    }, [])
+
+    const toggleAllSymbols = useCallback(() => {
+        setSelectedSymbols(allItemsSelected ? [] : trackingItems.map(item => item.symbol))
+    }, [allItemsSelected, trackingItems])
+
+    const handleBatchDelete = useCallback(async () => {
+        const symbols = trackingItems
+            .filter(item => selectedSymbolSet.has(item.symbol))
+            .map(item => item.symbol)
+        if (symbols.length === 0) return
+        if (!confirm(`确定删除已选的 ${symbols.length} 只持仓吗？`)) return
+
+        setImportDeleting(true)
+        setImportFeedback(null)
+        try {
+            const result = await api.deletePortfolioImportsBatch(symbols)
+            setSelectedSymbols([])
+            setImportFeedback({ tone: 'success', message: `已删除 ${result.deleted_symbols.length} 只持仓` })
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '批量删除失败' })
+        } finally {
+            setImportDeleting(false)
+        }
+    }, [refreshBoard, selectedSymbolSet, trackingItems])
 
     const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]
@@ -214,13 +365,6 @@ export default function TrackingBoardPanel() {
         }
     }, [])
 
-    // Auto-expand import section when no items
-    useEffect(() => {
-        if (!trackingLoading && trackingItems.length === 0) {
-            setShowImportSection(true)
-        }
-    }, [trackingLoading, trackingItems.length])
-
     return (
         <div className="space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -252,10 +396,87 @@ export default function TrackingBoardPanel() {
 
                 {showImportSection && (
                     <div className="space-y-3 pb-4">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40">
+                            <div className="mb-2 text-xs font-medium text-slate-600 dark:text-slate-300">单条新增 / 更新</div>
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                                <input
+                                    value={manualPosition.symbol}
+                                    onChange={e => {
+                                        setManualPosition(current => ({ ...current, symbol: e.target.value, name: '' }))
+                                        setManualQuote({ price: null, loading: false, error: null })
+                                    }}
+                                    placeholder="股票代码"
+                                    aria-label="股票代码"
+                                    required
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500"
+                                />
+                                <input
+                                    value={manualPosition.name}
+                                    placeholder="股票名称（自动带出）"
+                                    aria-label="股票名称"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:placeholder:text-slate-500"
+                                />
+                                <input
+                                    value={manualPosition.currentPosition}
+                                    onChange={e => setManualPosition(current => ({ ...current, currentPosition: e.target.value }))}
+                                    placeholder="持仓数"
+                                    aria-label="持仓数"
+                                    inputMode="decimal"
+                                    required
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500"
+                                />
+                                <input
+                                    value={manualPosition.averageCost}
+                                    onChange={e => setManualPosition(current => ({ ...current, averageCost: e.target.value }))}
+                                    placeholder="成本价"
+                                    aria-label="成本价"
+                                    inputMode="decimal"
+                                    required
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500"
+                                />
+                                <input
+                                    value={manualQuote.price == null ? '' : String(manualQuote.price)}
+                                    placeholder={manualQuote.loading ? '正在获取...' : '最新价格'}
+                                    aria-label="最新价格"
+                                    readOnly
+                                    disabled
+                                    className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:placeholder:text-slate-500"
+                                />
+                                <input
+                                    value={calculatedMarketValue == null ? '' : String(calculatedMarketValue)}
+                                    placeholder={manualQuote.loading ? '正在获取实时价格...' : '市值（实时价计算）'}
+                                    aria-label="市值"
+                                    readOnly
+                                    disabled
+                                    className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:placeholder:text-slate-500"
+                                />
+                            </div>
+                            <div className={`mt-2 text-xs ${manualQuote.error ? 'text-rose-500' : 'text-slate-500 dark:text-slate-400'}`}>
+                                {manualQuote.loading
+                                    ? '正在获取当前实时价格...'
+                                    : manualQuote.error
+                                        ? manualQuote.error
+                                        : manualQuote.price != null
+                                            ? `当前实时价：¥${formatNumber(manualQuote.price, 3)}，市值 = 持仓数 × 当前实时价`
+                                            : '填写完整股票代码后自动获取实时价格'}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleAddSinglePosition}
+                                disabled={manualSaving || importSaving || manualQuote.loading || manualQuote.price == null || !manualPosition.symbol.trim() || !manualPosition.currentPosition.trim() || !manualPosition.averageCost.trim()}
+                                className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                {manualSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                                新增 / 更新一只
+                            </button>
+                        </div>
+
                         <textarea
                             value={positionText}
                             onChange={e => setPositionText(e.target.value)}
-                            placeholder={'每行一只股票，格式：代码 名称 持仓数 成本价 市值\n例如：600519 贵州茅台 100 1800 180000'}
+                            placeholder={'截图识别结果会显示在这里，确认后保存；也支持批量录入，每行一只股票\n例如：600519 贵州茅台 100 1800 180000'}
                             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500 min-h-[100px] resize-y"
                         />
 
@@ -263,11 +484,11 @@ export default function TrackingBoardPanel() {
                             <button
                                 type="button"
                                 onClick={handleSavePositions}
-                                disabled={importSaving || !positionText.trim()}
+                                disabled={importSaving || manualSaving || !positionText.trim()}
                                 className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                                 {importSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                                保存持仓
+                                保存识别结果
                             </button>
 
                             <button
@@ -311,6 +532,31 @@ export default function TrackingBoardPanel() {
                 )}
             </div>
 
+            {trackingItems.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900">
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                        <input
+                            type="checkbox"
+                            checked={allItemsSelected}
+                            onChange={toggleAllSymbols}
+                            className="h-4 w-4 rounded border-slate-300 accent-blue-500"
+                            aria-label="全选持仓"
+                        />
+                        全选持仓
+                        <span className="text-xs text-slate-400">已选 {selectedCount} 只</span>
+                    </label>
+                    <button
+                        type="button"
+                        onClick={handleBatchDelete}
+                        disabled={selectedCount === 0 || importDeleting}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-rose-500/10 dark:text-rose-300 dark:hover:bg-rose-500/20"
+                    >
+                        {importDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        批量删除
+                    </button>
+                </div>
+            )}
+
             {trackingLoading && !trackingBoard ? (
                 <div className="flex items-center justify-center py-12 text-slate-500 dark:text-slate-400">
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -327,6 +573,8 @@ export default function TrackingBoardPanel() {
             ) : viewMode === 'simple' ? (
                 <SimpleBoardView
                     items={trackingItems}
+                    selectedSymbols={selectedSymbolSet}
+                    onToggleSymbol={toggleSymbol}
                     trackingRefreshing={trackingRefreshing}
                     trackingError={trackingError}
                     lastQuoteTime={lastQuoteTime}
@@ -334,6 +582,8 @@ export default function TrackingBoardPanel() {
             ) : (
                 <DetailedBoardView
                     items={trackingItems}
+                    selectedSymbols={selectedSymbolSet}
+                    onToggleSymbol={toggleSymbol}
                     trackingRefreshing={trackingRefreshing}
                     trackingError={trackingError}
                     liveMarketValueTotal={liveMarketValueTotal}
@@ -378,11 +628,15 @@ function ViewModeSwitch({
 
 function SimpleBoardView({
     items,
+    selectedSymbols,
+    onToggleSymbol,
     trackingRefreshing,
     trackingError,
     lastQuoteTime,
 }: {
     items: TrackingBoardItem[]
+    selectedSymbols: Set<string>
+    onToggleSymbol: (symbol: string) => void
     trackingRefreshing: boolean
     trackingError: string | null
     lastQuoteTime: string | null
@@ -391,7 +645,8 @@ function SimpleBoardView({
         <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
             <div className="overflow-x-auto">
                 <div className="min-w-[1180px]">
-                    <div className="grid grid-cols-[1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs font-medium tracking-[0.12em] text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
+                    <div className="grid grid-cols-[auto_1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs font-medium tracking-[0.12em] text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
+                        <div aria-hidden="true" />
                         <div>标的</div>
                         <div>当日 K 线</div>
                         <div>最新价</div>
@@ -405,7 +660,12 @@ function SimpleBoardView({
                     </div>
 
                     {items.map(item => (
-                        <SimpleTrackingRow key={item.symbol} item={item} />
+                        <SimpleTrackingRow
+                            key={item.symbol}
+                            item={item}
+                            selected={selectedSymbols.has(item.symbol)}
+                            onToggle={() => onToggleSymbol(item.symbol)}
+                        />
                     ))}
                 </div>
             </div>
@@ -422,7 +682,15 @@ function SimpleBoardView({
     )
 }
 
-function SimpleTrackingRow({ item }: { item: TrackingBoardItem }) {
+function SimpleTrackingRow({
+    item,
+    selected,
+    onToggle,
+}: {
+    item: TrackingBoardItem
+    selected: boolean
+    onToggle: () => void
+}) {
     const priceChangePct = item.price_change_pct ?? null
     const isUp = (priceChangePct ?? 0) >= 0
     const costToneClass = item.average_cost != null && item.live_price != null && item.average_cost > item.live_price
@@ -437,7 +705,16 @@ function SimpleTrackingRow({ item }: { item: TrackingBoardItem }) {
     const rangeAlert = getModelRangeAlert(item)
 
     return (
-        <div className="grid grid-cols-[1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 px-5 py-5 last:border-b-0 dark:border-slate-700">
+        <div className="grid grid-cols-[auto_1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 px-5 py-5 last:border-b-0 dark:border-slate-700">
+            <div className="flex items-start pt-1">
+                <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={onToggle}
+                    className="h-4 w-4 rounded border-slate-300 accent-blue-500"
+                    aria-label={`选择 ${item.name}`}
+                />
+            </div>
             <div className="min-w-0">
                 <SecurityLabel symbol={item.symbol} name={item.name} nameClassName="text-[18px] font-semibold" />
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
@@ -588,6 +865,8 @@ function SimpleDayCandle({ item }: { item: TrackingBoardItem }) {
 
 function DetailedBoardView({
     items,
+    selectedSymbols,
+    onToggleSymbol,
     trackingRefreshing,
     trackingError,
     liveMarketValueTotal,
@@ -596,6 +875,8 @@ function DetailedBoardView({
     onOpenReport,
 }: {
     items: TrackingBoardItem[]
+    selectedSymbols: Set<string>
+    onToggleSymbol: (symbol: string) => void
     trackingRefreshing: boolean
     trackingError: string | null
     liveMarketValueTotal: number
@@ -632,6 +913,8 @@ function DetailedBoardView({
                     <DetailedTrackingRow
                         key={item.symbol}
                         item={item}
+                        selected={selectedSymbols.has(item.symbol)}
+                        onToggle={() => onToggleSymbol(item.symbol)}
                         onAnalyze={() => onAnalyze(item.symbol)}
                         onOpenReport={() => {
                             if (item.analysis?.report_id) {
@@ -647,10 +930,14 @@ function DetailedBoardView({
 
 function DetailedTrackingRow({
     item,
+    selected,
+    onToggle,
     onAnalyze,
     onOpenReport,
 }: {
     item: TrackingBoardItem
+    selected: boolean
+    onToggle: () => void
     onAnalyze: () => void
     onOpenReport: () => void
 }) {
@@ -679,6 +966,13 @@ function DetailedTrackingRow({
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center">
                 <div className="min-w-0 xl:w-[220px]">
                     <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={onToggle}
+                            className="h-4 w-4 rounded border-slate-300 accent-blue-500"
+                            aria-label={`选择 ${item.name}`}
+                        />
                         <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">
                             <TrendingUp className="h-4 w-4" />
                         </div>

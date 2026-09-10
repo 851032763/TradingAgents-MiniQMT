@@ -57,7 +57,9 @@ README 仅保留近期更新摘要；完整版本历史见 [CHANGELOG.md](CHANGE
 
 ### 持仓追踪与跟踪看板
 
-支持导入持仓数据，自动记录持仓、成本价与仓位占比，并可一键将持仓标的补齐到定时分析列表。控制台会展示跟踪看板摘要，完整看板页支持查看实时价格、当日区间、持仓盈亏与上一交易日报告区间，方便盘中快速跟踪。
+支持通过截图识别导入持仓，也支持在页面中逐条新增或更新。截图识别采用按股票代码增量合并：已存在的股票更新持仓信息，本次未识别到的原有股票继续保留，不会清空整个看板；相同股票代码只保留一条记录。看板支持勾选多条记录后批量删除，并可一键将持仓标的补齐到定时分析列表。
+
+手动新增时，股票代码、持仓数和成本价为必填项；输入完整股票代码后自动查询股票名称和最新价格，股票名称、最新价格和市值不可手工修改。市值按“持仓数 × 当前实时价格”计算，不按成本价估算。控制台会展示跟踪看板摘要，完整看板页支持查看实时价格、当日区间、持仓盈亏与上一交易日报告区间，方便盘中快速跟踪。
 
 ### 结构化研报管理
 
@@ -338,6 +340,8 @@ cn_miniqmt -> cn_akshare -> cn_baostock -> cn_investoday -> yfinance -> alpha_va
 | 历史检索 | `GET /v1/reports` |
 | 批量获取最新报告 | `POST /v1/reports/latest-by-symbols` |
 | 持仓导入 | `GET/POST/DELETE /v1/portfolio/imports` |
+| 批量删除持仓 | `POST /v1/portfolio/imports/batch/delete` |
+| 获取单只股票实时价格 | `GET /v1/market/realtime-quote?symbol=600519.SH` |
 | 跟踪看板摘要/明细 | `GET /v1/dashboard/tracking-board` |
 | 获取未来 A 股交易日 | `GET /v1/market/trading-dates` |
 | 批量定时任务操作 | `PATCH /v1/scheduled/batch`、`POST /v1/scheduled/batch/delete`、`POST /v1/scheduled/batch/trigger` |

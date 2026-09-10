@@ -307,6 +307,13 @@ class ApiService {
         await this.request('/v1/portfolio/imports', { method: 'DELETE' })
     }
 
+    async deletePortfolioImportsBatch(symbols: string[]): Promise<{ deleted_symbols: string[]; missing_symbols: string[] }> {
+        return this.request('/v1/portfolio/imports/batch/delete', {
+            method: 'POST',
+            body: JSON.stringify({ symbols }),
+        })
+    }
+
     async parsePositionImage(file: File): Promise<{ positions: PortfolioPositionInput[] }> {
         const formData = new FormData()
         formData.append('file', file)
@@ -333,6 +340,34 @@ class ApiService {
     // Stock Search
     async searchStocks(q: string): Promise<{ results: StockSearchResult[] }> {
         return this.request<{ results: StockSearchResult[] }>(`/v1/market/stock-search?q=${encodeURIComponent(q)}`)
+    }
+
+    async getRealtimeQuote(symbol: string): Promise<{
+        symbol: string
+        name: string
+        price: number
+        quote_time?: string | number | null
+        source?: string | null
+    }> {
+        try {
+            return await this.request(`/v1/market/realtime-quote?symbol=${encodeURIComponent(symbol)}`)
+        } catch {
+            // Compatibility fallback for an already-running backend that has
+            // not loaded the new single-quote route yet. The daily K-line
+            // endpoint overlays the latest MiniQMT quote when available.
+            const kline = await this.getKline(symbol)
+            const latest = kline.candles[kline.candles.length - 1]
+            if (!latest || !Number.isFinite(latest.close) || latest.close <= 0) {
+                throw new Error('暂未获取到该标的的最新价格')
+            }
+            return {
+                symbol: kline.symbol,
+                name: kline.name || kline.symbol,
+                price: latest.close,
+                quote_time: latest.date,
+                source: kline.source || 'kline',
+            }
+        }
     }
 
     async getConfig(): Promise<RuntimeConfig> {

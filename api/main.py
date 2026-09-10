@@ -926,6 +926,10 @@ class PortfolioImportSyncRequest(BaseModel):
     auto_apply_scheduled: bool = Field(True, description="是否自动将持仓股票加入定时任务")
 
 
+class PortfolioImportBatchDeleteRequest(BaseModel):
+    symbols: List[str] = Field(default_factory=list, max_length=100)
+
+
 class UserTokenResponse(BaseModel):
     id: str
     name: str
@@ -4400,6 +4404,37 @@ def search_stocks(
     return {"results": results}
 
 
+@app.get("/v1/market/realtime-quote")
+def get_realtime_quote(
+    symbol: str = Query(..., min_length=6, max_length=12),
+    current_user: UserDB = Depends(_require_api_user),
+):
+    """Return the latest quote used by the tracking board for one symbol."""
+    normalized = portfolio_import_service.normalize_position_symbol(symbol)
+    if normalized is None:
+        raise HTTPException(400, "无效的股票代码")
+
+    try:
+        raw = route_to_vendor("get_realtime_quotes", [normalized])
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        quote = payload.get(normalized) or payload.get(normalized.upper()) if isinstance(payload, dict) else None
+        price = float(quote["price"]) if quote and quote.get("price") is not None else None
+    except Exception as exc:
+        logger.warning("[realtime-quote] fetch failed for %s: %s", normalized, exc)
+        raise HTTPException(503, "实时行情获取失败，请稍后重试") from exc
+
+    if price is None or price <= 0:
+        raise HTTPException(503, "暂未获取到该标的的实时价格")
+
+    return {
+        "symbol": normalized,
+        "name": _security_display_name(normalized),
+        "price": price,
+        "quote_time": quote.get("quote_time"),
+        "source": quote.get("source"),
+    }
+
+
 def _annotate_scheduled_with_imported_context(items: List[dict], db: Session, user_id: str) -> List[dict]:
     imported_map: Dict[str, Dict[str, Any]] = {}
     for item in portfolio_import_service.list_imported_positions(db, user_id):
@@ -4480,6 +4515,22 @@ def clear_portfolio_import_state(
     db: Session = Depends(get_db),
 ):
     portfolio_import_service.clear_imported_portfolio(db, current_user.id)
+
+
+@app.post("/v1/portfolio/imports/batch/delete")
+def batch_delete_portfolio_imports(
+    body: PortfolioImportBatchDeleteRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return portfolio_import_service.delete_imported_positions(
+            db=db,
+            user_id=current_user.id,
+            symbols=body.symbols,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/portfolio/parse-image")

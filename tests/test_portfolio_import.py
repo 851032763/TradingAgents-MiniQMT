@@ -90,12 +90,16 @@ class TestPortfolioImportService:
             positions=[
                 {"symbol": "600519", "current_position": 100},
                 {"symbol": "000858", "current_position": 200},
+                {"symbol": "159824", "current_position": 8200},
+                {"symbol": "510300", "current_position": 1000},
             ],
         )
 
         symbols = [p["symbol"] for p in result["positions"]]
         assert "600519.SH" in symbols
         assert "000858.SZ" in symbols
+        assert "159824.SZ" in symbols
+        assert "510300.SH" in symbols
 
     def test_sync_positions_deduplicates(self, db):
         from api.services import portfolio_import_service
@@ -110,6 +114,64 @@ class TestPortfolioImportService:
         )
 
         assert result["summary"]["positions"] == 1
+
+    def test_sync_positions_upserts_without_removing_existing_rows(self, db):
+        from api.database import ImportedPortfolioPositionDB
+        from api.services import portfolio_import_service
+
+        portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-upsert",
+            positions=[
+                {"symbol": "600519.SH", "name": "贵州茅台", "current_position": 100, "average_cost": 1700, "market_value": 100},
+                {"symbol": "300750.SZ", "name": "宁德时代", "current_position": 200, "market_value": 300},
+            ],
+        )
+        original = db.query(ImportedPortfolioPositionDB).filter_by(
+            user_id="user-upsert", symbol="600519.SH"
+        ).one()
+        original.trade_points_count = 2
+        db.commit()
+
+        result = portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-upsert",
+            positions=[{"symbol": "600519", "current_position": 150, "average_cost": 1750, "market_value": 100}],
+        )
+
+        assert result["summary"]["positions"] == 2
+        updated = db.query(ImportedPortfolioPositionDB).filter_by(
+            user_id="user-upsert", symbol="600519.SH"
+        ).one()
+        assert updated.id == original.id
+        assert updated.current_position == pytest.approx(150)
+        assert updated.average_cost == pytest.approx(1750)
+        assert updated.current_position_pct == pytest.approx(25)
+        assert updated.security_name == "贵州茅台"
+        assert updated.trade_points_count == 2
+        assert db.query(ImportedPortfolioPositionDB).filter_by(
+            user_id="user-upsert", symbol="300750.SZ"
+        ).count() == 1
+
+    def test_delete_imported_positions(self, db):
+        from api.services import portfolio_import_service
+
+        portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-delete-batch",
+            positions=[{"symbol": "600519.SH"}, {"symbol": "300750.SZ"}],
+        )
+
+        result = portfolio_import_service.delete_imported_positions(
+            db, "user-delete-batch", ["600519", "601318.SH"]
+        )
+
+        assert result == {
+            "deleted_symbols": ["600519.SH"],
+            "missing_symbols": ["601318.SH"],
+        }
+        state = portfolio_import_service.get_import_state(db, "user-delete-batch")
+        assert [item["symbol"] for item in state["positions"]] == ["300750.SZ"]
 
     def test_clear_imported_portfolio(self, db):
         from api.services import portfolio_import_service
@@ -236,3 +298,29 @@ class TestPortfolioImportApi:
         assert scheduled.status_code == 200
         scheduled_symbols = [item["symbol"] for item in scheduled.json()["items"]]
         assert scheduled_symbols == ["600519.SH", "300750.SZ"]
+
+    def test_batch_delete_endpoint_deletes_selected_symbols(self):
+        from api.main import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+        token = _auth_unique(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.post(
+            "/v1/portfolio/imports",
+            headers=headers,
+            json={"positions": [{"symbol": "600519"}, {"symbol": "300750"}]},
+        )
+
+        response = client.post(
+            "/v1/portfolio/imports/batch/delete",
+            headers=headers,
+            json={"symbols": ["600519.SH"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "deleted_symbols": ["600519.SH"],
+            "missing_symbols": [],
+        }
+        state = client.get("/v1/portfolio/imports", headers=headers)
+        assert [item["symbol"] for item in state.json()["positions"]] == ["300750.SZ"]
