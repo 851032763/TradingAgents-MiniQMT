@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from api.database import ImportedPortfolioPositionDB, ReportDB
+from api.services.portfolio_import_service import normalize_position_symbol
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.trade_calendar import cn_today_str, previous_cn_trading_day
 
@@ -107,7 +108,6 @@ def _select_reports_for_symbols(
         db.query(ReportDB)
         .filter(
             ReportDB.user_id == user_id,
-            ReportDB.symbol.in_(symbols),
             ReportDB.status == "completed",
         )
         .order_by(ReportDB.trade_date.desc(), ReportDB.created_at.desc())
@@ -119,12 +119,18 @@ def _select_reports_for_symbols(
     latest_any: dict[str, ReportDB] = {}
 
     for row in rows:
-        if row.symbol not in latest_any:
-            latest_any[row.symbol] = row
-        if row.trade_date == previous_trade_date and row.symbol not in exact_previous:
-            exact_previous[row.symbol] = row
-        if row.trade_date <= previous_trade_date and row.symbol not in latest_before_previous:
-            latest_before_previous[row.symbol] = row
+        # Older reports may have been saved as bare six-digit codes while
+        # imported positions use an exchange suffix. Index both by the
+        # canonical symbol so the latest completed report still attaches.
+        canonical_symbol = normalize_position_symbol(row.symbol) or str(row.symbol or "").strip().upper()
+        if canonical_symbol not in symbols:
+            continue
+        if canonical_symbol not in latest_any:
+            latest_any[canonical_symbol] = row
+        if row.trade_date == previous_trade_date and canonical_symbol not in exact_previous:
+            exact_previous[canonical_symbol] = row
+        if row.trade_date <= previous_trade_date and canonical_symbol not in latest_before_previous:
+            latest_before_previous[canonical_symbol] = row
 
     selected: dict[str, ReportDB] = {}
     for symbol in symbols:

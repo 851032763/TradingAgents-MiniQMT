@@ -88,7 +88,8 @@ class TestDashboardTrackingApi:
             )
             report_service.create_report(
                 db=db,
-                symbol="300750.SZ",
+                # Legacy reports may be stored without the exchange suffix.
+                symbol="300750",
                 trade_date="2026-03-28",
                 decision="BUY",
                 user_id=user_id,
