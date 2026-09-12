@@ -5,6 +5,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Analysis from './pages/Analysis'
 import KronosPrediction from './pages/KronosPrediction'
+import KronosHistory from './pages/KronosHistory'
 import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 import Portfolio from './pages/Portfolio'
@@ -61,6 +62,7 @@ function App() {
                   <Route path="/miniqmt-sync" element={<MiniQMTSync />} />
                   <Route path="/analysis" element={<Analysis />} />
                   <Route path="/kronos" element={<KronosPrediction />} />
+                  <Route path="/kronos/history" element={<KronosHistory />} />
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/portfolio" element={<Portfolio />} />
                   <Route path="/settings" element={<Settings />} />

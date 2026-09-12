@@ -406,6 +406,61 @@ export interface KronosPredictResponse {
     error?: string | null
 }
 
+export type KronosRunStatus = 'running' | 'completed' | 'failed'
+
+export interface KronosPredictionRunRequest {
+    symbol: string
+    frequency: 'D' | 'H' | 'min'
+    lookback: number
+    pred_len: number
+    temperature: number
+    top_p: number
+    sample_count: number
+    model_key: 'small' | 'base'
+}
+
+export interface KronosParameterSnapshot {
+    snapshot_format: number
+    request?: { symbol: string; frequency: 'D' | 'H' | 'min'; market_period: '1d' | '5m' | '1m'; lookback: number; pred_len: number; temperature: number; top_p: number; sample_count: number; model_key: 'small' | 'base' }
+    market_data?: { query_start_date: string; query_end_date: string; source?: string | null; valid_candle_count: number; history_start_date: string; history_end_date: string; history_candle_count: number }
+    execution?: { model_loaded?: string | null; device?: string | null; inference_time_ms?: number | null; prediction_candle_count?: number; forecast_start_date?: string | null; forecast_end_date?: string | null; trading_calendar?: string | null }
+}
+
+export interface KronosPredictionRun {
+    id: string
+    symbol: string
+    security_name?: string | null
+    status: KronosRunStatus
+    error_message?: string | null
+    frequency: 'D' | 'H' | 'min'
+    lookback_requested: number
+    lookback_actual?: number | null
+    pred_len: number
+    temperature: number
+    top_p: number
+    sample_count: number
+    model_key: 'small' | 'base'
+    model_loaded?: string | null
+    device?: string | null
+    inference_time_ms?: number | null
+    history_start_date?: string | null
+    history_end_date?: string | null
+    market_data_source?: string | null
+    parameter_snapshot: KronosParameterSnapshot
+    summary: { latest_close?: number; final_forecast?: number; forecast_change_pct?: number; forecast_high?: number; forecast_low?: number }
+    snapshot_version: number
+    created_at: string
+    completed_at?: string | null
+    input_klines?: Array<KronosKlineDataPoint & { date: string }>
+    forecast_dates?: string[]
+    predictions?: KronosPrediction[]
+}
+
+export interface KronosPredictionRunListResponse {
+    total: number
+    runs: KronosPredictionRun[]
+}
+
 // Structured extraction types
 export interface RiskItem {
     name: string

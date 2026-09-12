@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, MiniQMTSyncState, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TradingDatesResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, KronosHealth, KronosModelInfo, KronosPredictRequest, KronosPredictResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, MiniQMTSyncState, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TradingDatesResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, KronosHealth, KronosModelInfo, KronosPredictRequest, KronosPredictResponse, KronosPredictionRun, KronosPredictionRunListResponse, KronosPredictionRunRequest } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -305,6 +305,33 @@ class ApiService {
 
     async clearPortfolioImport(): Promise<void> {
         await this.request('/v1/portfolio/imports', { method: 'DELETE' })
+    }
+
+    async createKronosPredictionRun(request: KronosPredictionRunRequest): Promise<KronosPredictionRun> {
+        return this.request<KronosPredictionRun>('/v1/kronos/predictions', { method: 'POST', body: JSON.stringify(request) })
+    }
+
+    async getKronosPredictionRuns(filters: { symbol?: string; status?: string; frequency?: string; modelKey?: string; skip?: number; limit?: number } = {}): Promise<KronosPredictionRunListResponse> {
+        const params = new URLSearchParams()
+        if (filters.symbol) params.set('symbol', filters.symbol)
+        if (filters.status) params.set('status', filters.status)
+        if (filters.frequency) params.set('frequency', filters.frequency)
+        if (filters.modelKey) params.set('model_key', filters.modelKey)
+        params.set('skip', String(filters.skip ?? 0))
+        params.set('limit', String(filters.limit ?? 20))
+        return this.request<KronosPredictionRunListResponse>(`/v1/kronos/predictions?${params}`)
+    }
+
+    async getKronosPredictionRun(id: string): Promise<KronosPredictionRun> {
+        return this.request<KronosPredictionRun>(`/v1/kronos/predictions/${id}`)
+    }
+
+    async deleteKronosPredictionRun(id: string): Promise<void> {
+        await this.request(`/v1/kronos/predictions/${id}`, { method: 'DELETE' })
+    }
+
+    async deleteKronosPredictionRuns(ids: string[]): Promise<{ deleted: number }> {
+        return this.request('/v1/kronos/predictions/batch/delete', { method: 'POST', body: JSON.stringify({ run_ids: ids }) })
     }
 
     async deletePortfolioImportsBatch(symbols: string[]): Promise<{ deleted_symbols: string[]; missing_symbols: string[] }> {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
     Activity,
     AlertCircle,
@@ -6,6 +7,7 @@ import {
     CheckCircle2,
     Cpu,
     Gauge,
+    History,
     Play,
     RefreshCw,
     Server,
@@ -26,11 +28,10 @@ import {
 import { api } from '@/services/api'
 import SecurityLabel from '@/components/SecurityLabel'
 import type {
-    KlineCandle,
     KronosHealth,
-    KronosKlineDataPoint,
     KronosModelInfo,
     KronosPrediction as KronosPredictionPoint,
+    KronosPredictionRun,
 } from '@/types'
 
 type KronosConfig = {
@@ -99,17 +100,6 @@ function nextDate(dateText: string, frequency: KronosConfig['frequency'], offset
     return date.toISOString()
 }
 
-function toKronosKline(candle: KlineCandle): KronosKlineDataPoint {
-    return {
-        open: Number(candle.open),
-        high: Number(candle.high),
-        low: Number(candle.low),
-        close: Number(candle.close),
-        volume: Number(candle.volume ?? 0),
-        amount: Number(candle.amount ?? 0),
-    }
-}
-
 export default function KronosPrediction() {
     const [config, setConfig] = useState<KronosConfig>(() => {
         try {
@@ -121,7 +111,7 @@ export default function KronosPrediction() {
     })
     const [health, setHealth] = useState<KronosHealth | null>(null)
     const [modelInfo, setModelInfo] = useState<KronosModelInfo | null>(null)
-    const [candles, setCandles] = useState<KlineCandle[]>([])
+    const [candles, setCandles] = useState<Array<{ date: string; close: number }>>([])
     const [securityName, setSecurityName] = useState<string | null>(null)
     const [predictions, setPredictions] = useState<KronosPredictionPoint[]>([])
     const [forecastDates, setForecastDates] = useState<string[]>([])
@@ -192,35 +182,16 @@ export default function KronosPrediction() {
         setPredictions([])
         setForecastDates([])
         try {
-            const selectedFrequency = FREQUENCIES.find(item => item.value === config.frequency) ?? FREQUENCIES[0]
-            const end = new Date()
-            const days = config.frequency === 'D' ? Math.max(config.lookback * 2, 180) : config.frequency === 'H' ? 45 : 10
-            const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
-            const response = await api.getKline(symbol, start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), selectedFrequency.period)
-            setSecurityName(response.name || symbol)
-            const source = response.candles.filter(candle => [candle.open, candle.high, candle.low, candle.close].every(value => Number.isFinite(Number(value))))
-            if (source.length < 10) throw new Error('可用 K 线不足 10 根，无法进行 Kronos 预测')
-            const history = source.slice(-Math.min(config.lookback, 512))
-            const lastHistoryDate = history[history.length - 1].date
-            const [result, dailyForecastDates] = await Promise.all([
-                api.predictKronos({
-                    klines: history.map(toKronosKline),
-                    pred_len: config.predLen,
-                    temperature: config.temperature,
-                    top_p: config.topP,
-                    sample_count: config.sampleCount,
-                    freq: config.frequency,
-                }),
-                config.frequency === 'D'
-                    ? api.getTradingDates(lastHistoryDate.slice(0, 10), config.predLen)
-                    : Promise.resolve([]),
-            ])
-            if (!result.success || !result.predictions?.length) throw new Error(result.error || 'Kronos 未返回预测结果')
-            if (config.frequency === 'D' && dailyForecastDates.length < result.predictions.length) throw new Error('交易日历未返回完整预测日期')
-            setCandles(history)
+            const result: KronosPredictionRun = await api.createKronosPredictionRun({
+                symbol, frequency: config.frequency, lookback: config.lookback, pred_len: config.predLen,
+                temperature: config.temperature, top_p: config.topP, sample_count: config.sampleCount, model_key: config.model,
+            })
+            if (result.status !== 'completed' || !result.predictions?.length) throw new Error(result.error_message || 'Kronos 未返回预测结果')
+            setSecurityName(result.security_name || symbol)
+            setCandles((result.input_klines || []).map(candle => ({ date: candle.date, close: Number(candle.close) })))
             setPredictions(result.predictions)
-            setForecastDates(dailyForecastDates)
-            setInferenceTimeMs(result.inference_time_ms)
+            setForecastDates(result.forecast_dates || [])
+            setInferenceTimeMs(result.inference_time_ms ?? null)
             setHealth(current => current ? { ...current, status: 'ready' } : current)
             setLastRunAt(new Date().toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
         } catch (err) {
@@ -266,10 +237,10 @@ export default function KronosPrediction() {
                     </div>
                     <p className="mt-3 max-w-2xl text-sm text-slate-500 dark:text-slate-400">基于 Kronos 时序模型的 OHLCVA 预测工作台，调整采样参数后即可对当前标的发起推理。</p>
                 </div>
-                <div className={`inline-flex items-center gap-2 self-start rounded-full border px-3 py-2 text-xs font-semibold ${statusReady ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                <div className="flex items-center gap-3"><Link to="/kronos/history" className="btn-secondary flex items-center gap-2 text-sm"><History className="h-4 w-4" />预测记录</Link><div className={`inline-flex items-center gap-2 self-start rounded-full border px-3 py-2 text-xs font-semibold ${statusReady ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'}`}>
                     <span className={`h-2 w-2 rounded-full ${statusReady ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                     {loadingService ? '正在连接' : statusReady ? `服务正常 · ${health?.device || 'CPU'}` : '服务待检查'}
-                </div>
+                </div></div>
             </header>
 
             {error && (

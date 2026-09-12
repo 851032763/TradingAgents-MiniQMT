@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from typing import Generator
 
-from sqlalchemy import Boolean, create_engine, Column, String, DateTime, Text, Integer, Float, JSON, UniqueConstraint, event, text
+from sqlalchemy import Boolean, create_engine, Column, String, DateTime, Text, Integer, Float, JSON, UniqueConstraint, event, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # Database URL - default to SQLite for simplicity
@@ -93,6 +93,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_report_schema()
     _ensure_user_schema()
+    _ensure_kronos_prediction_schema()
 
 
 def _ensure_report_schema() -> None:
@@ -141,6 +142,20 @@ def _ensure_user_schema() -> None:
 
     _migrate_tokens_to_hashed()
     _migrate_api_keys_reencrypt()
+
+
+def _ensure_kronos_prediction_schema() -> None:
+    """Add immutable run metadata to existing local Kronos tables."""
+    try:
+        with engine.begin() as conn:
+            table_names = inspect(conn).get_table_names()
+            if "kronos_prediction_runs" not in table_names:
+                return
+            columns = {column["name"] for column in inspect(conn).get_columns("kronos_prediction_runs")}
+            if "parameter_snapshot" not in columns:
+                conn.execute(text("ALTER TABLE kronos_prediction_runs ADD COLUMN parameter_snapshot JSON"))
+    except Exception as e:
+        logger.error("Failed to ensure Kronos prediction schema: %s", e)
 
 
 def _migrate_tokens_to_hashed() -> None:
@@ -316,6 +331,45 @@ class ReportDB(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class KronosPredictionRunDB(Base):
+    """Immutable, user-owned snapshot of one Kronos inference run."""
+
+    __tablename__ = "kronos_prediction_runs"
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    security_name = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="running", index=True)
+    error_message = Column(Text, nullable=True)
+
+    frequency = Column(String(10), nullable=False)
+    lookback_requested = Column(Integer, nullable=False)
+    lookback_actual = Column(Integer, nullable=True)
+    pred_len = Column(Integer, nullable=False)
+    temperature = Column(Float, nullable=False)
+    top_p = Column(Float, nullable=False)
+    sample_count = Column(Integer, nullable=False)
+    model_key = Column(String(20), nullable=False)
+    model_loaded = Column(String(100), nullable=True)
+    device = Column(String(50), nullable=True)
+    inference_time_ms = Column(Float, nullable=True)
+
+    history_start_date = Column(String(32), nullable=True)
+    history_end_date = Column(String(32), nullable=True)
+    market_data_source = Column(String(50), nullable=True)
+    input_klines = Column(JSON, nullable=True)
+    forecast_dates = Column(JSON, nullable=True)
+    predictions = Column(JSON, nullable=True)
+    # Request and execution metadata are persisted together as an immutable
+    # audit record, independent of later frontend defaults or model changes.
+    parameter_snapshot = Column(JSON, nullable=True)
+    summary = Column(JSON, nullable=True)
+    snapshot_version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class UserDB(Base):

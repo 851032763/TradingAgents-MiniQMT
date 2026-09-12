@@ -493,6 +493,19 @@ class TestWatchlistAddEndpoint:
         assert body["summary"] == {"total": 2, "added": 1, "duplicate": 1, "failed": 0}
         assert [item["status"] for item in body["results"]] == ["added", "duplicate"]
 
+    def test_batch_add_prefers_miniqmt_for_code_validation(self):
+        """A MiniQMT-known code must not be rejected by an outdated AkShare map."""
+        with patch("api.main._get_miniqmt_stock_maps", return_value=({}, {})), \
+             patch("api.main._lookup_miniqmt_instrument", return_value=(True, "正威新材")), \
+             patch("api.main._load_cn_stock_map", return_value={}), \
+             patch("api.main._get_reverse_stock_map", return_value={}):
+            r = self.client.post("/v1/watchlist", headers=self.headers, json={"text": "002201"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["summary"] == {"total": 1, "added": 1, "duplicate": 0, "failed": 0}
+        assert body["results"][0]["symbol"] == "002201.SZ"
+        assert body["results"][0]["name"] == "正威新材"
+
 
 class TestReportsEndpoint:
     @pytest.fixture(autouse=True)

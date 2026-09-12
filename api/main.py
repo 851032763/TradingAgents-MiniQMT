@@ -6,6 +6,8 @@ import os
 import re
 import socket
 import traceback
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from io import StringIO
 from pathlib import Path
@@ -42,10 +44,11 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
 import pandas as pd
 
-from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
+from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, KronosPredictionRunDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service
 from api.services.miniqmt_sync_service import DATA_TYPES as MINIQMT_DATA_TYPES, get_miniqmt_sync_service
+from api.services import kronos_prediction_service
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -74,6 +77,8 @@ from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.graph.intent_parser import parse_intent as _parse_intent
 from tradingagents.agents.utils.context_utils import USER_CONTEXT_KEYS, normalize_user_context
 from tradingagents.agents.utils.agent_states import current_tracker_var
+
+_kronos_service_lock = Lock()
 
 
 def _cors_allow_origins() -> list[str]:
@@ -267,9 +272,9 @@ async def lifespan(app: FastAPI):
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
-    # Pre-load stock + ETF name map
-    await asyncio.to_thread(_load_cn_stock_map)
-    _log("Stock map pre-loaded on startup.")
+    # Security names/universe are loaded lazily on first lookup. This avoids
+    # issuing one MiniQMT detail request per security during application boot.
+    _log("Security master will be loaded lazily from MiniQMT (AkShare is fallback).")
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
@@ -390,6 +395,85 @@ def _serialize_datetime_utc(value: Optional[datetime]) -> Optional[str]:
 _cn_stock_map_loaded_at: float = 0  # timestamp of last load
 _STOCK_MAP_TTL = 7 * 86400  # 7 days
 _STOCK_MAP_FAILURE_RETRY = 300  # Retry a failed remote refresh after 5 minutes.
+_miniqmt_name_cache: Dict[str, str] = {}
+_miniqmt_stock_map_cache: tuple[Dict[str, str], Dict[str, str]] | None = None
+_miniqmt_stock_map_loaded_at: float = 0
+_MINIQMT_STOCK_MAP_TTL = 3600
+
+
+def _list_miniqmt_symbols() -> list[str]:
+    """Return the locally configured MiniQMT security universe, if available."""
+    try:
+        from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+
+        xtdata = CnMiniQMTProvider._xtdata()
+        get_stocks = getattr(xtdata, "get_stock_list_in_sector", None)
+        if not callable(get_stocks):
+            return []
+        raw_symbols: list[str] = []
+        for sector in ("沪深A股", "沪深ETF", "北交所", "沪深指数"):
+            raw_symbols.extend(str(item).upper() for item in (get_stocks(sector) or []))
+        symbols = []
+        for raw_symbol in dict.fromkeys(raw_symbols):
+            try:
+                symbols.append(CnMiniQMTProvider._normalize_symbol(raw_symbol))
+            except NotImplementedError:
+                continue
+        return symbols
+    except Exception as exc:
+        _log(f"[MiniQMT] security universe unavailable: {type(exc).__name__}: {exc}")
+        return []
+
+
+def _get_miniqmt_stock_maps() -> tuple[Dict[str, str], Dict[str, str]]:
+    """Build name/code maps from the local MiniQMT universe."""
+    global _miniqmt_stock_map_cache, _miniqmt_stock_map_loaded_at
+    now = time.time()
+    if _miniqmt_stock_map_cache is not None and now - _miniqmt_stock_map_loaded_at < _MINIQMT_STOCK_MAP_TTL:
+        return ({**_miniqmt_stock_map_cache[0]}, {**_miniqmt_stock_map_cache[1]})
+    name_to_code: Dict[str, str] = {}
+    code_to_name: Dict[str, str] = {}
+    for symbol in _list_miniqmt_symbols():
+        found, name = _lookup_miniqmt_instrument(symbol)
+        if found:
+            code_to_name[symbol] = name or symbol
+            if name:
+                name_to_code[name] = symbol
+    _miniqmt_stock_map_cache = (name_to_code, code_to_name)
+    _miniqmt_stock_map_loaded_at = now
+    return ({**name_to_code}, {**code_to_name})
+
+
+def _lookup_miniqmt_instrument(symbol: str) -> tuple[bool, Optional[str]]:
+    """Validate a symbol against the local MiniQMT instrument master.
+
+    MiniQMT is the authoritative source for the application's market data.
+    This helper deliberately treats a connection/import failure as
+    "unavailable" rather than "invalid", so callers can safely fall back to
+    the legacy AkShare security map during outages.
+    """
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return False, None
+    if normalized in _miniqmt_name_cache:
+        return True, _miniqmt_name_cache[normalized]
+    try:
+        from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
+
+        detail = CnMiniQMTProvider._xtdata().get_instrument_detail(normalized) or {}
+        if not isinstance(detail, dict) or not detail:
+            return False, None
+        name = str(
+            detail.get("InstrumentName")
+            or detail.get("instrument_name")
+            or detail.get("name")
+            or ""
+        ).strip()
+        _miniqmt_name_cache[normalized] = name or normalized
+        return True, name or normalized
+    except Exception as exc:
+        _log(f"[MiniQMT] instrument lookup unavailable for {normalized}: {type(exc).__name__}: {exc}")
+        return False, None
 
 
 def _load_cn_stock_map() -> Dict[str, str]:
@@ -475,7 +559,9 @@ def _search_cn_stock_by_name(query: str) -> Optional[str]:
     query = query.strip()
     if not query:
         return None
-    stock_map = _load_cn_stock_map()
+    stock_map, _ = _get_miniqmt_stock_maps()
+    if not stock_map:
+        stock_map = _load_cn_stock_map()
     # 1. Exact match
     if query in stock_map:
         return stock_map[query]
@@ -507,6 +593,23 @@ def _resolve_watchlist_identifier(
         symbol = name_to_code[token]
         return symbol, code_to_name.get(symbol, token), None
     symbol = _normalize_symbol(token)
+    # Prefer the local MiniQMT instrument master for code validation/name
+    # resolution. AkShare remains a compatibility fallback when MiniQMT is
+    # unavailable, but must not reject a symbol that MiniQMT knows.
+    if re.fullmatch(r"\d{6}\.(SH|SZ|BJ)", symbol):
+        miniqmt_available, miniqmt_name = _lookup_miniqmt_instrument(symbol)
+        if miniqmt_available:
+            return symbol, miniqmt_name or code_to_name.get(symbol, symbol), None
+        # Some MiniQMT builds expose the sector universe before instrument
+        # details are downloaded. Presence in that local universe is enough
+        # to accept the code; the name can be filled in later.
+        if symbol in set(_list_miniqmt_symbols()):
+            return symbol, code_to_name.get(symbol, symbol), None
+        # MiniQMT unavailable: use the legacy map only as a last resort.
+        if symbol not in code_to_name:
+            fallback_code_to_name = _get_reverse_stock_map()
+            if symbol in fallback_code_to_name:
+                return symbol, fallback_code_to_name[symbol], None
     if symbol in code_to_name:
         return symbol, code_to_name.get(symbol, symbol), None
     return None, None, f"未识别的股票代码或名称: {token}"
@@ -696,6 +799,26 @@ class KlineResponse(BaseModel):
 class TradingDatesResponse(BaseModel):
     after_date: str
     dates: List[str]
+
+
+class KronosPredictionRunRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    frequency: Literal["D", "H", "min"] = "D"
+    lookback: int = Field(120, ge=10, le=512)
+    pred_len: int = Field(30, ge=1, le=200)
+    temperature: float = Field(1.0, ge=0.1, le=5.0)
+    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    sample_count: int = Field(1, ge=1, le=5)
+    model_key: Literal["small", "base"] = "base"
+
+
+class KronosPredictionRunListResponse(BaseModel):
+    total: int
+    runs: List[Dict[str, Any]]
+
+
+class KronosPredictionBatchDeleteRequest(BaseModel):
+    run_ids: List[str] = Field(..., min_length=1, max_length=200)
 
 
 class MiniQMTSyncRequest(BaseModel):
@@ -2435,6 +2558,9 @@ def _normalize_symbol(raw: str) -> str:
         return m2.group(1)
         
     # Final Fallback: Check Chinese Name Map (e.g. "三花智控" -> "002050.SZ")
+    miniqmt_names, _ = _get_miniqmt_stock_maps()
+    if s in miniqmt_names:
+        return miniqmt_names[s]
     stock_map = _load_cn_stock_map()
     if s in stock_map:
         return stock_map[s]
@@ -2547,20 +2673,9 @@ def _security_display_name(symbol: str) -> str:
     if normalized in _security_name_cache:
         return _security_name_cache[normalized]
 
-    name = _get_reverse_stock_map().get(normalized)
-    if not name:
-        try:
-            from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
-
-            detail = CnMiniQMTProvider._xtdata().get_instrument_detail(normalized) or {}
-            name = str(
-                detail.get("InstrumentName")
-                or detail.get("instrument_name")
-                or detail.get("name")
-                or ""
-            ).strip()
-        except Exception as exc:
-            _log(f"[security-name] MiniQMT lookup unavailable for {normalized}: {type(exc).__name__}: {exc}")
+    miniqmt_available, name = _lookup_miniqmt_instrument(normalized)
+    if not miniqmt_available:
+        name = _get_reverse_stock_map().get(normalized)
 
     resolved = name or normalized
     _security_name_cache[normalized] = resolved
@@ -2931,6 +3046,240 @@ def get_trading_dates(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TradingDatesResponse(after_date=after_date, dates=dates)
+
+
+def _kronos_service_url() -> str:
+    return os.getenv("KRONOS_SERVICE_URL", "http://127.0.0.1:8101").rstrip("/")
+
+
+def _kronos_service_request(path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"{_kronos_service_url()}{path}",
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json"} if body else {},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Kronos 服务请求失败（{exc.code}）：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"无法连接 Kronos 服务：{exc.reason}") from exc
+
+
+def _kronos_forecast_dates(last_date: str, frequency: str, count: int) -> list[str]:
+    if frequency == "D":
+        return next_cn_trading_days(last_date[:10], count)
+    parsed = pd.to_datetime(last_date, errors="coerce")
+    if pd.isna(parsed):
+        return [f"{last_date}-{index + 1}" for index in range(count)]
+    step = timedelta(hours=1) if frequency == "H" else timedelta(minutes=5)
+    return [(parsed.to_pydatetime() + step * (index + 1)).isoformat() for index in range(count)]
+
+
+def _run_kronos_prediction_snapshot(
+    request: KronosPredictionRunRequest,
+    run: KronosPredictionRunDB,
+) -> dict[str, Any]:
+    selected_period = {"D": "1d", "H": "5m", "min": "1m"}[request.frequency]
+    end = datetime.now(CN_TZ).date()
+    days = max(request.lookback * 2, 180) if request.frequency == "D" else (45 if request.frequency == "H" else 10)
+    start = end - timedelta(days=days)
+    kline_response = get_kline(
+        symbol=request.symbol,
+        start_date=start.strftime("%Y-%m-%d"),
+        end_date=end.strftime("%Y-%m-%d"),
+        period=selected_period,
+    )
+    source = [
+        candle for candle in kline_response.candles
+        if all(candle.get(key) is not None for key in ("open", "high", "low", "close"))
+    ]
+    if len(source) < 10:
+        raise RuntimeError("可用 K 线不足 10 根，无法进行 Kronos 预测")
+
+    history = source[-min(request.lookback, 512):]
+    input_klines = [
+        {
+            "date": str(candle["date"]),
+            "open": float(candle["open"]), "high": float(candle["high"]),
+            "low": float(candle["low"]), "close": float(candle["close"]),
+            "volume": float(candle.get("volume") or 0), "amount": float(candle.get("amount") or 0),
+        }
+        for candle in history
+    ]
+    last_date = str(history[-1]["date"])
+
+    # Model switching and inference are serialized: the standalone service owns
+    # one process-wide model instance, so concurrent requests must not cross-use it.
+    with _kronos_service_lock:
+        info = _kronos_service_request("/models/info")
+        if info.get("current_model") != request.model_key:
+            _kronos_service_request("/models/switch", method="POST", payload={"model_key": request.model_key})
+        health = _kronos_service_request("/health")
+        result = _kronos_service_request(
+            "/predict",
+            method="POST",
+            payload={
+                "klines": [
+                    {key: candle[key] for key in ("open", "high", "low", "close", "volume", "amount")}
+                    for candle in input_klines
+                ],
+                # The Kronos service defaults to 60 steps when this field is
+                # absent.  Always forward the user-selected horizon so the
+                # result, calendar axis, and frozen run parameters agree.
+                "pred_len": request.pred_len,
+                "temperature": request.temperature, "top_p": request.top_p,
+                "sample_count": request.sample_count, "freq": request.frequency,
+            },
+        )
+
+    predictions = result.get("predictions") or []
+    if not result.get("success") or not predictions:
+        raise RuntimeError(str(result.get("error") or "Kronos 未返回预测结果"))
+    # The predictor may return a different count from its requested horizon for
+    # some sampling strategies.  Preserve the requested parameter separately,
+    # but always generate a one-to-one date axis for the actual frozen output.
+    if len(predictions) != request.pred_len:
+        logger.warning(
+            "[Kronos] prediction count differs from requested horizon: requested=%s returned=%s",
+            request.pred_len, len(predictions),
+        )
+    forecast_dates = _kronos_forecast_dates(last_date, request.frequency, len(predictions))
+
+    latest_close = float(input_klines[-1]["close"])
+    final_forecast = float(predictions[-1]["close"])
+    parameter_snapshot = {
+        "snapshot_format": 1,
+        "request": {
+            "symbol": request.symbol,
+            "frequency": request.frequency,
+            "market_period": selected_period,
+            "lookback": request.lookback,
+            "pred_len": request.pred_len,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "sample_count": request.sample_count,
+            "model_key": request.model_key,
+        },
+        "market_data": {
+            "query_start_date": start.isoformat(),
+            "query_end_date": end.isoformat(),
+            "source": kline_response.source,
+            "valid_candle_count": len(source),
+            "history_start_date": str(history[0]["date"]),
+            "history_end_date": last_date,
+            "history_candle_count": len(input_klines),
+        },
+        "execution": {
+            "model_loaded": str(health.get("model") or request.model_key),
+            "device": str(health.get("device") or "unknown"),
+            "inference_time_ms": float(result.get("inference_time_ms") or 0),
+            "prediction_candle_count": len(predictions),
+            "forecast_start_date": forecast_dates[0] if forecast_dates else None,
+            "forecast_end_date": forecast_dates[-1] if forecast_dates else None,
+            "trading_calendar": "cn_a_share" if request.frequency == "D" else None,
+        },
+    }
+    return {
+        "input_klines": input_klines,
+        "forecast_dates": forecast_dates,
+        "predictions": predictions,
+        "history_start_date": str(history[0]["date"]),
+        "history_end_date": last_date,
+        "market_data_source": kline_response.source,
+        "model_loaded": str(health.get("model") or request.model_key),
+        "device": str(health.get("device") or "unknown"),
+        "inference_time_ms": float(result.get("inference_time_ms") or 0),
+        "parameter_snapshot": parameter_snapshot,
+        "summary": {
+            "latest_close": latest_close,
+            "final_forecast": final_forecast,
+            "forecast_change_pct": ((final_forecast - latest_close) / latest_close * 100) if latest_close else None,
+            "forecast_high": max(float(item["high"]) for item in predictions),
+            "forecast_low": min(float(item["low"]) for item in predictions),
+        },
+    }
+
+
+@app.post("/v1/kronos/predictions")
+def create_kronos_prediction_run(
+    request: KronosPredictionRunRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(_require_api_user),
+):
+    symbol = _normalize_symbol(request.symbol)
+    security_name = _get_reverse_stock_map_cached_only().get(symbol) or _security_display_name(symbol)
+    request_snapshot = {
+        "snapshot_format": 1,
+        "request": {
+            "symbol": symbol, "frequency": request.frequency,
+            "market_period": {"D": "1d", "H": "5m", "min": "1m"}[request.frequency],
+            "lookback": request.lookback, "pred_len": request.pred_len,
+            "temperature": request.temperature, "top_p": request.top_p,
+            "sample_count": request.sample_count, "model_key": request.model_key,
+        },
+    }
+    run = kronos_prediction_service.create_running(
+        db, user_id=current_user.id, symbol=symbol, security_name=security_name,
+        frequency=request.frequency, lookback_requested=request.lookback, pred_len=request.pred_len,
+        temperature=request.temperature, top_p=request.top_p, sample_count=request.sample_count, model_key=request.model_key,
+        parameter_snapshot=request_snapshot,
+    )
+    try:
+        snapshot = _run_kronos_prediction_snapshot(request.model_copy(update={"symbol": symbol}), run)
+        completed = kronos_prediction_service.complete(db, run, **snapshot)
+        return kronos_prediction_service.serialize(completed, detail=True)
+    except Exception as exc:
+        failed = kronos_prediction_service.fail(db, run, str(exc))
+        logger.warning("[Kronos] prediction run %s failed: %s", run.id, exc)
+        return kronos_prediction_service.serialize(failed, detail=True)
+
+
+@app.get("/v1/kronos/predictions", response_model=KronosPredictionRunListResponse)
+def list_kronos_prediction_runs(
+    symbol: Optional[str] = Query(None), status_filter: Optional[str] = Query(None, alias="status"),
+    frequency: Optional[str] = Query(None), model_key: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db), current_user: UserDB = Depends(_require_api_user),
+):
+    total, runs = kronos_prediction_service.list_runs(
+        db, user_id=current_user.id, symbol=symbol.upper() if symbol else None, status=status_filter,
+        frequency=frequency, model_key=model_key, skip=skip, limit=limit,
+    )
+    return {"total": total, "runs": [kronos_prediction_service.serialize(run) for run in runs]}
+
+
+@app.get("/v1/kronos/predictions/{run_id}")
+def get_kronos_prediction_run(
+    run_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(_require_api_user),
+):
+    run = kronos_prediction_service.get(db, run_id, current_user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="预测记录不存在")
+    return kronos_prediction_service.serialize(run, detail=True)
+
+
+@app.delete("/v1/kronos/predictions/{run_id}")
+def delete_kronos_prediction_run(
+    run_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(_require_api_user),
+):
+    if not kronos_prediction_service.delete(db, run_id, current_user.id):
+        raise HTTPException(status_code=404, detail="预测记录不存在")
+    return {"message": "预测记录已删除"}
+
+
+@app.post("/v1/kronos/predictions/batch/delete")
+def batch_delete_kronos_prediction_runs(
+    body: KronosPredictionBatchDeleteRequest, db: Session = Depends(get_db), current_user: UserDB = Depends(_require_api_user),
+):
+    try:
+        return {"deleted": kronos_prediction_service.batch_delete(db, body.run_ids, current_user.id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _parse_quote_time(value: Any) -> datetime:
@@ -4383,8 +4732,21 @@ def search_stocks(
     if not q:
         return {"results": []}
 
-    name_to_code = _load_cn_stock_map()
-    code_to_name = _get_reverse_stock_map()
+    # Search needs a full universe, which MiniQMT exposes through its local
+    # sector catalogue. Prefer it so results match the configured terminal;
+    # retain AkShare as a compatibility fallback for unavailable/older clients.
+    name_to_code: Dict[str, str] = {}
+    code_to_name: Dict[str, str] = {}
+    for symbol in _list_miniqmt_symbols():
+        found, name = _lookup_miniqmt_instrument(symbol)
+        if found:
+            code_to_name[symbol] = name or symbol
+            if name:
+                name_to_code[name] = symbol
+
+    if not code_to_name:
+        name_to_code = _load_cn_stock_map()
+        code_to_name = _get_reverse_stock_map()
     results = []
     q_upper = q.upper()
 
@@ -4479,7 +4841,12 @@ def _build_manual_imported_user_context(db: Session, user_id: str, symbol: str) 
 def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List[dict]:
     for item in items:
         symbol = str(item.get("symbol") or "").upper()
-        item["name"] = code_to_name.get(symbol) or _security_display_name(symbol) if symbol else item.get("name") or ""
+        if symbol:
+            # Resolve through MiniQMT first; the supplied map may be the
+            # legacy AkShare compatibility cache and can contain stale names.
+            item["name"] = _security_display_name(symbol) or code_to_name.get(symbol, symbol)
+        else:
+            item["name"] = item.get("name") or ""
     return items
 
 
@@ -4593,8 +4960,17 @@ def add_to_watchlist(
     if not tokens:
         raise HTTPException(400, "至少提供一个股票代码或名称")
 
-    name_to_code = _load_cn_stock_map()
-    code_to_name = _get_reverse_stock_map()
+    # Numeric inputs can be validated directly by MiniQMT; avoid building a
+    # full name map for the common single-code case.
+    if all(re.fullmatch(r"\d{6}(?:\.(?:SH|SZ|BJ|SS))?", token, re.IGNORECASE) for token in tokens):
+        name_to_code, code_to_name = {}, {}
+    else:
+        name_to_code, code_to_name = _get_miniqmt_stock_maps()
+        # AkShare is only a compatibility fallback when MiniQMT cannot provide
+        # a usable local universe (older client, disconnected terminal, etc.).
+        if not name_to_code and not code_to_name:
+            name_to_code = _load_cn_stock_map()
+            code_to_name = _get_reverse_stock_map()
 
     resolved_entries: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
@@ -4718,12 +5094,17 @@ def create_scheduled_analysis(
     current_user: UserDB = Depends(_require_api_user),
     db: Session = Depends(get_db),
 ):
-    symbol = body.get("symbol", "").strip().upper()
+    raw_symbol = str(body.get("symbol", "") or "").strip()
+    if not raw_symbol:
+        raise HTTPException(400, "symbol is required")
+    symbol = _normalize_symbol(raw_symbol)
     horizon = body.get("horizon", "short")
     trigger_time = body.get("trigger_time", "20:00")
-    if not symbol:
-        raise HTTPException(400, "symbol is required")
-    code_to_name = _get_reverse_stock_map()
+    miniqmt_available, miniqmt_name = _lookup_miniqmt_instrument(symbol)
+    if not miniqmt_available and symbol not in set(_list_miniqmt_symbols()):
+        code_to_name = _get_reverse_stock_map()
+    else:
+        code_to_name = {symbol: miniqmt_name or symbol}
     if symbol not in code_to_name:
         raise HTTPException(400, f"未知的股票代码: {symbol}")
     try:
