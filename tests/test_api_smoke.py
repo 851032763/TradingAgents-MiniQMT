@@ -506,6 +506,24 @@ class TestWatchlistAddEndpoint:
         assert body["results"][0]["symbol"] == "002201.SZ"
         assert body["results"][0]["name"] == "正威新材"
 
+    def test_batch_add_falls_back_when_miniqmt_name_is_unusable(self):
+        with patch("api.main._get_miniqmt_stock_maps", return_value=({}, {})), \
+             patch("api.main._lookup_miniqmt_instrument", return_value=(True, None)), \
+             patch("api.main._get_reverse_stock_map", return_value={"002201.SZ": "正威新材"}):
+            r = self.client.post("/v1/watchlist", headers=self.headers, json={"text": "002201"})
+        assert r.status_code == 200
+        assert r.json()["results"][0]["name"] == "正威新材"
+
+
+def test_security_display_name_rejects_miniqmt_mojibake():
+    from api import main
+
+    main._security_name_cache.pop("002201.SZ", None)
+    with patch("api.main._lookup_miniqmt_instrument", return_value=(True, None)), \
+         patch("api.main._get_reverse_stock_map", return_value={"002201.SZ": "正威新材"}):
+        assert main._security_display_name("002201.SZ") == "正威新材"
+    main._security_name_cache.pop("002201.SZ", None)
+
 
 class TestReportsEndpoint:
     @pytest.fixture(autouse=True)

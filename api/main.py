@@ -396,6 +396,7 @@ _cn_stock_map_loaded_at: float = 0  # timestamp of last load
 _STOCK_MAP_TTL = 7 * 86400  # 7 days
 _STOCK_MAP_FAILURE_RETRY = 300  # Retry a failed remote refresh after 5 minutes.
 _miniqmt_name_cache: Dict[str, str] = {}
+_miniqmt_known_symbols: set[str] = set()
 _miniqmt_stock_map_cache: tuple[Dict[str, str], Dict[str, str]] | None = None
 _miniqmt_stock_map_loaded_at: float = 0
 _MINIQMT_STOCK_MAP_TTL = 3600
@@ -435,10 +436,9 @@ def _get_miniqmt_stock_maps() -> tuple[Dict[str, str], Dict[str, str]]:
     code_to_name: Dict[str, str] = {}
     for symbol in _list_miniqmt_symbols():
         found, name = _lookup_miniqmt_instrument(symbol)
-        if found:
-            code_to_name[symbol] = name or symbol
-            if name:
-                name_to_code[name] = symbol
+        if found and name:
+            code_to_name[symbol] = name
+            name_to_code[name] = symbol
     _miniqmt_stock_map_cache = (name_to_code, code_to_name)
     _miniqmt_stock_map_loaded_at = now
     return ({**name_to_code}, {**code_to_name})
@@ -457,20 +457,28 @@ def _lookup_miniqmt_instrument(symbol: str) -> tuple[bool, Optional[str]]:
         return False, None
     if normalized in _miniqmt_name_cache:
         return True, _miniqmt_name_cache[normalized]
+    if normalized in _miniqmt_known_symbols:
+        return True, None
     try:
         from tradingagents.dataflows.providers.cn_miniqmt_provider import CnMiniQMTProvider
 
         detail = CnMiniQMTProvider._xtdata().get_instrument_detail(normalized) or {}
         if not isinstance(detail, dict) or not detail:
             return False, None
+        _miniqmt_known_symbols.add(normalized)
         name = str(
             detail.get("InstrumentName")
             or detail.get("instrument_name")
             or detail.get("name")
             or ""
         ).strip()
-        _miniqmt_name_cache[normalized] = name or normalized
-        return True, name or normalized
+        # Some xtquant installations decode the GBK instrument name with the
+        # wrong codec and return replacement characters. Such a value proves
+        # the symbol exists, but must never be cached or shown as its name.
+        if not name or "\ufffd" in name or name.upper() == normalized:
+            return True, None
+        _miniqmt_name_cache[normalized] = name
+        return True, name
     except Exception as exc:
         _log(f"[MiniQMT] instrument lookup unavailable for {normalized}: {type(exc).__name__}: {exc}")
         return False, None
@@ -599,7 +607,10 @@ def _resolve_watchlist_identifier(
     if re.fullmatch(r"\d{6}\.(SH|SZ|BJ)", symbol):
         miniqmt_available, miniqmt_name = _lookup_miniqmt_instrument(symbol)
         if miniqmt_available:
-            return symbol, miniqmt_name or code_to_name.get(symbol, symbol), None
+            display_name = miniqmt_name or code_to_name.get(symbol)
+            if not display_name:
+                display_name = _get_reverse_stock_map().get(symbol)
+            return symbol, display_name or symbol, None
         # Some MiniQMT builds expose the sector universe before instrument
         # details are downloaded. Presence in that local universe is enough
         # to accept the code; the name can be filled in later.
@@ -2673,8 +2684,8 @@ def _security_display_name(symbol: str) -> str:
     if normalized in _security_name_cache:
         return _security_name_cache[normalized]
 
-    miniqmt_available, name = _lookup_miniqmt_instrument(normalized)
-    if not miniqmt_available:
+    _, name = _lookup_miniqmt_instrument(normalized)
+    if not name:
         name = _get_reverse_stock_map().get(normalized)
 
     resolved = name or normalized
@@ -4082,7 +4093,7 @@ def list_reports(
         skip=skip,
         limit=limit,
     )
-    code_to_name = _get_reverse_stock_map_cached_only()
+    code_to_name = _get_reverse_stock_map()
     for r in reports:
         r.name = code_to_name.get(r.symbol) or _security_display_name(r.symbol)
         _attach_job_runtime_state(r, str(getattr(r, "id", "")))
@@ -4100,6 +4111,9 @@ def list_latest_reports_by_symbols(
         user_id=current_user.id,
         symbols=body.symbols,
     )
+    code_to_name = _get_reverse_stock_map()
+    for report in reports:
+        report.name = code_to_name.get(report.symbol) or _security_display_name(report.symbol)
     return {"reports": reports}
 
 
@@ -4842,9 +4856,7 @@ def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List
     for item in items:
         symbol = str(item.get("symbol") or "").upper()
         if symbol:
-            # Resolve through MiniQMT first; the supplied map may be the
-            # legacy AkShare compatibility cache and can contain stale names.
-            item["name"] = _security_display_name(symbol) or code_to_name.get(symbol, symbol)
+            item["name"] = code_to_name.get(symbol) or _security_display_name(symbol)
         else:
             item["name"] = item.get("name") or ""
     return items
@@ -5052,7 +5064,7 @@ def list_scheduled_analyses(
     db: Session = Depends(get_db),
 ):
     items = scheduled_service.list_scheduled(db, current_user.id)
-    _attach_stock_names(items, _get_reverse_stock_map_cached_only())
+    _attach_stock_names(items, _get_reverse_stock_map())
     return {"items": _annotate_scheduled_with_imported_context(items, db, current_user.id)}
 
 
@@ -5061,7 +5073,7 @@ def get_portfolio_overview(
     current_user: UserDB = Depends(_require_api_user),
     db: Session = Depends(get_db),
 ):
-    code_to_name = _get_reverse_stock_map_cached_only()
+    code_to_name = _get_reverse_stock_map()
 
     watchlist_items = watchlist_service.list_watchlist(db, current_user.id)
     _attach_stock_names(watchlist_items, code_to_name)
