@@ -114,8 +114,6 @@ def _select_reports_for_symbols(
         .all()
     )
 
-    exact_previous: dict[str, ReportDB] = {}
-    latest_before_previous: dict[str, ReportDB] = {}
     latest_any: dict[str, ReportDB] = {}
 
     for row in rows:
@@ -127,14 +125,13 @@ def _select_reports_for_symbols(
             continue
         if canonical_symbol not in latest_any:
             latest_any[canonical_symbol] = row
-        if row.trade_date == previous_trade_date and canonical_symbol not in exact_previous:
-            exact_previous[canonical_symbol] = row
-        if row.trade_date <= previous_trade_date and canonical_symbol not in latest_before_previous:
-            latest_before_previous[canonical_symbol] = row
 
     selected: dict[str, ReportDB] = {}
     for symbol in symbols:
-        report = exact_previous.get(symbol) or latest_before_previous.get(symbol) or latest_any.get(symbol)
+        # The board must show the latest completed analysis, including a
+        # report generated on the current trading day. The previous-day flag
+        # is only presentation metadata and must not affect report selection.
+        report = latest_any.get(symbol)
         if report:
             selected[symbol] = report
     return selected
@@ -174,7 +171,7 @@ def _summarize_trader_advice(text: str | None, fallback_text: str | None = None)
         ):
             match = re.search(pattern, source, re.IGNORECASE)
             if match:
-                return _clip_summary(match.group(1))
+                return _clip_summary(_strip_markdown(match.group(1)))
 
         lines = [
             _clip_summary(line.strip(" -*\t"))
@@ -191,7 +188,8 @@ def _strip_markdown(text: str) -> str:
     cleaned = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
     cleaned = cleaned.replace("\r", "\n")
     cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
-    cleaned = re.sub(r"\*\*|__", "", cleaned)
+    cleaned = re.sub(r"\*\*|__|~~", "", cleaned)
+    cleaned = re.sub(r"(?<!\w)[*_](?!\w)", "", cleaned)
     cleaned = re.sub(r"^\s*#+\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", cleaned)
     return cleaned
@@ -203,7 +201,7 @@ def _clip_summary(text: str | None) -> str | None:
     compact = re.sub(r"\s+", " ", text).strip(" ，,;；。")
     if not compact:
         return None
-    return compact[:96]
+    return compact[:320]
 
 
 def _fetch_live_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:

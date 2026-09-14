@@ -88,6 +88,17 @@ class TestDashboardTrackingApi:
             )
             report_service.create_report(
                 db=db,
+                symbol="600519.SH",
+                trade_date="2026-03-31",
+                decision="BUY",
+                user_id=user_id,
+                result_data={
+                    "trader_investment_plan": "结论：**增持**，严格控制仓位\n目标价：1800\n止损价：1680",
+                    "final_trade_decision": "结论：**增持**，严格控制仓位\n目标价：1800\n止损价：1680",
+                },
+            )
+            report_service.create_report(
+                db=db,
                 # Legacy reports may be stored without the exchange suffix.
                 symbol="300750",
                 trade_date="2026-03-28",
@@ -150,11 +161,12 @@ class TestDashboardTrackingApi:
         assert mt["amount"] == 635000000.0
         assert mt["floating_pnl"] == 11750.0
         assert mt["floating_pnl_pct"] == 1.38
-        assert mt["analysis"]["trade_date"] == "2026-03-30"
-        assert mt["analysis"]["is_previous_trade_day"] is True
-        assert mt["analysis"]["high_price"] == 1750.0
-        assert mt["analysis"]["low_price"] == 1650.0
-        assert "持有" in (mt["analysis"]["trader_advice_summary"] or "")
+        assert mt["analysis"]["trade_date"] == "2026-03-31"
+        assert mt["analysis"]["is_previous_trade_day"] is False
+        assert mt["analysis"]["high_price"] == 1800.0
+        assert mt["analysis"]["low_price"] == 1680.0
+        assert "增持" in (mt["analysis"]["trader_advice_summary"] or "")
+        assert "**" not in (mt["analysis"]["trader_advice_summary"] or "")
 
         catl = by_symbol["300750.SZ"]
         assert catl["day_open"] == 206.1

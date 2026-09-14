@@ -15,20 +15,13 @@ import {
     Upload,
     Wallet,
 } from 'lucide-react'
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import type { PortfolioPositionInput, TrackingBoardItem, TrackingBoardResponse } from '@/types'
 import SecurityLabel from '@/components/SecurityLabel'
-
-const CLAMP_TWO_LINES_STYLE: CSSProperties = {
-    display: '-webkit-box',
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: 'vertical',
-    overflow: 'hidden',
-}
 
 type BoardViewMode = 'simple' | 'detailed'
 type BoardTone = 'blue' | 'emerald' | 'rose' | 'amber'
@@ -1140,7 +1133,7 @@ function DetailedTrackingRow({
                             <ShieldAlert className="h-4 w-4 text-amber-500" />
                             <p className="text-xs uppercase tracking-[0.14em] text-slate-400">交易员建议</p>
                         </div>
-                        <p className="mt-3 text-sm leading-6 text-slate-700 dark:text-slate-200" style={CLAMP_TWO_LINES_STYLE}>
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 dark:text-slate-200">
                             {analysis?.trader_advice_summary || '暂未提取到建议摘要，可进入报告查看完整内容。'}
                         </p>
                         <div className="mt-4 flex flex-wrap gap-2">
